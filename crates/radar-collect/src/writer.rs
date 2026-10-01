@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use radar_core::db;
+use radar_core::schema::SENSOR_ROLLUP_SECS;
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::discover::SensorSource;
@@ -105,9 +106,19 @@ fn write_sample<'a>(
     let mut sensor_stmt = tx.prepare_cached(
         "INSERT OR IGNORE INTO sensor_samples (ts, sensor_id, value) VALUES (?1, ?2, ?3)",
     )?;
+    let rollup = s.ts.div_euclid(SENSOR_ROLLUP_SECS) * SENSOR_ROLLUP_SECS;
+    let mut rollup_stmt = tx.prepare_cached(
+        "INSERT INTO sensor_rollups (ts, sensor_id, total, peak, samples) VALUES (?1, ?2, ?3, ?3, 1)
+         ON CONFLICT (ts, sensor_id) DO UPDATE SET
+           total = total + excluded.total,
+           peak = max(peak, excluded.peak),
+           samples = samples + 1",
+    )?;
     for &(i, value) in &s.sensors {
-        if let Some(&id) = sensor_ids.get(i) {
-            sensor_stmt.execute((s.ts, id, value))?;
+        if let Some(&id) = sensor_ids.get(i)
+            && sensor_stmt.execute((s.ts, id, value))? > 0
+        {
+            rollup_stmt.execute((rollup, id, value))?;
         }
     }
 
@@ -184,9 +195,12 @@ mod tests {
         let top = query::top_procs(w.conn(), 120, 120, 10).unwrap();
         assert_eq!(top[0].name, "rustc");
         assert_eq!(top[0].ticks, 75);
-        let pts = query::sensor_series(w.conn(), 0, 1000, 5).unwrap();
-        assert_eq!(pts.len(), 3);
-        assert!(pts.iter().all(|p| p.sensor_id == 2));
+        let raw = query::sensor_series(w.conn(), 0, 1000, 5, &[2]).unwrap();
+        assert_eq!(raw.points.len(), 3);
+        let rolled = query::sensor_series(w.conn(), 0, 1000, SENSOR_ROLLUP_SECS, &[2]).unwrap();
+        assert_eq!(rolled.points.len(), 1);
+        assert_eq!(rolled.points[0].value, 40.0);
+        assert_eq!(rolled.stats, raw.stats);
 
         w.trim(150).unwrap();
         s.ts = 185;

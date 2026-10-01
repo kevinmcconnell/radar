@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 
-use crate::schema;
+use crate::schema::{self, SENSOR_ROLLUP_SECS};
 
 pub fn default_db_path() -> PathBuf {
     let data_home = std::env::var_os("XDG_DATA_HOME")
@@ -53,10 +53,13 @@ pub fn set_meta(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<(
     Ok(())
 }
 
+/// Sensor samples are kept back to the start of their rollup, so the two tables stay in step.
 pub fn trim(conn: &mut Connection, cutoff: i64) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM sys_samples WHERE ts < ?1", [cutoff])?;
-    tx.execute("DELETE FROM sensor_samples WHERE ts < ?1", [cutoff])?;
+    let rollup_cutoff = cutoff.div_euclid(SENSOR_ROLLUP_SECS) * SENSOR_ROLLUP_SECS;
+    tx.execute("DELETE FROM sensor_samples WHERE ts < ?1", [rollup_cutoff])?;
+    tx.execute("DELETE FROM sensor_rollups WHERE ts < ?1", [rollup_cutoff])?;
     tx.execute("DELETE FROM proc_minutes WHERE ts < ?1", [cutoff])?;
     tx.execute(
         "DELETE FROM proc_names WHERE id NOT IN (SELECT DISTINCT name_id FROM proc_minutes)",
