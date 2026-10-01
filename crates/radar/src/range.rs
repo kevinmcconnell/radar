@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -27,76 +27,133 @@ pub const PRESETS: [(&str, i64); 5] = [
     ("5d", 5 * 86400),
 ];
 
+const MINUTES_PER_DAY: i32 = 24 * 60;
+
 pub struct RangePicker {
     pub root: gtk::Box,
     toggles: Vec<gtk::ToggleButton>,
     custom: gtk::MenuButton,
     updating: Rc<Cell<bool>>,
     current: Rc<Cell<Range>>,
+    oldest: Rc<Cell<Option<i64>>>,
 }
 
 struct Endpoint {
-    calendar: gtk::Calendar,
-    hour: gtk::SpinButton,
-    minute: gtk::SpinButton,
+    day: gtk::DropDown,
+    labels: gtk::StringList,
+    time: gtk::SpinButton,
+    days: RefCell<Vec<glib::DateTime>>,
 }
 
 impl Endpoint {
     fn new() -> Self {
-        let spin = |max: f64| {
-            let s = gtk::SpinButton::with_range(0.0, max, 1.0);
-            s.set_orientation(gtk::Orientation::Vertical);
-            s.set_numeric(true);
-            s.connect_output(|s| {
-                s.set_text(&format!("{:02}", s.value() as i64));
-                glib::Propagation::Stop
-            });
-            s
-        };
+        let labels = gtk::StringList::new(&[]);
+        let day = gtk::DropDown::builder()
+            .model(&labels)
+            .hexpand(true)
+            .build();
+        let time = gtk::SpinButton::with_range(0.0, (MINUTES_PER_DAY - 1) as f64, 5.0);
+        time.set_numeric(false);
+        time.set_increments(5.0, 60.0);
+        time.set_width_chars(5);
+        time.connect_output(|s| {
+            s.set_text(&format_minutes(s.value_as_int()));
+            glib::Propagation::Stop
+        });
+        time.connect_input(|s| Some(parse_minutes(&s.text()).map(f64::from).ok_or(())));
         Endpoint {
-            calendar: gtk::Calendar::new(),
-            hour: spin(23.0),
-            minute: spin(59.0),
+            day,
+            labels,
+            time,
+            days: RefCell::new(Vec::new()),
         }
     }
 
-    fn widget(&self, title: &str) -> gtk::Box {
-        let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    fn attach(&self, grid: &gtk::Grid, title: &str, row: i32) {
         let label = gtk::Label::new(Some(title));
-        label.add_css_class("heading");
         label.set_xalign(0.0);
-        col.append(&label);
-        col.append(&self.calendar);
-        let time = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        time.set_halign(gtk::Align::Center);
-        time.append(&self.hour);
-        time.append(&gtk::Label::new(Some(":")));
-        time.append(&self.minute);
-        col.append(&time);
-        col
+        grid.attach(&label, 0, row, 1, 1);
+        grid.attach(&self.day, 1, row, 1, 1);
+        grid.attach(&self.time, 2, row, 1, 1);
+    }
+
+    fn set_days(&self, oldest: Option<i64>) {
+        let Some(today) = glib::DateTime::now_local()
+            .ok()
+            .and_then(|now| start_of_day(&now))
+        else {
+            return;
+        };
+        let oldest = oldest.unwrap_or(i64::MAX).min(today.to_unix());
+        let days: Vec<glib::DateTime> = (0..)
+            .map_while(|back| today.add_days(-back).ok())
+            .take_while(|day| day.add_days(1).is_ok_and(|next| next.to_unix() > oldest))
+            .collect();
+        let labels: Vec<String> = days
+            .iter()
+            .enumerate()
+            .map(|(back, day)| day_label(day, back))
+            .collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        self.labels
+            .splice(0, self.labels.n_items(), labels.as_slice());
+        *self.days.borrow_mut() = days;
     }
 
     fn set(&self, t: i64) {
-        if let Ok(dt) = glib::DateTime::from_unix_local(t) {
-            self.calendar.select_day(&dt);
-            self.hour.set_value(dt.hour() as f64);
-            self.minute.set_value(dt.minute() as f64);
-        }
+        let days = self.days.borrow();
+        let containing = days.iter().position(|day| day.to_unix() <= t);
+        let minutes = match (containing, glib::DateTime::from_unix_local(t)) {
+            (Some(_), Ok(dt)) => dt.hour() * 60 + dt.minute(),
+            _ => 0,
+        };
+        self.day
+            .set_selected(containing.unwrap_or(days.len().saturating_sub(1)) as u32);
+        self.time.set_value(minutes as f64);
     }
 
     fn get(&self) -> Option<i64> {
-        let d = self.calendar.date();
+        self.time.update();
+        let days = self.days.borrow();
+        let day = days.get(self.day.selected() as usize)?;
+        let minutes = self.time.value_as_int();
         let dt = glib::DateTime::from_local(
-            d.year(),
-            d.month(),
-            d.day_of_month(),
-            self.hour.value() as i32,
-            self.minute.value() as i32,
+            day.year(),
+            day.month(),
+            day.day_of_month(),
+            minutes / 60,
+            minutes % 60,
             0.0,
         )
         .ok()?;
         Some(dt.to_unix())
     }
+}
+
+fn start_of_day(dt: &glib::DateTime) -> Option<glib::DateTime> {
+    glib::DateTime::from_local(dt.year(), dt.month(), dt.day_of_month(), 0, 0, 0.0).ok()
+}
+
+fn day_label(day: &glib::DateTime, days_back: usize) -> String {
+    match days_back {
+        0 => "Today".to_string(),
+        1 => "Yesterday".to_string(),
+        _ => day
+            .format("%a %b %-e")
+            .map(|s| s.to_string())
+            .unwrap_or_default(),
+    }
+}
+
+fn format_minutes(minutes: i32) -> String {
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+fn parse_minutes(text: &str) -> Option<i32> {
+    let text = text.trim();
+    let (hour, minute) = text.split_once(':').unwrap_or((text, "0"));
+    let (hour, minute) = (hour.parse::<i32>().ok()?, minute.parse::<i32>().ok()?);
+    ((0..24).contains(&hour) && (0..60).contains(&minute)).then_some(hour * 60 + minute)
 }
 
 fn describe(from: i64, to: i64) -> String {
@@ -129,6 +186,7 @@ impl RangePicker {
         let on_change = Rc::new(on_change);
         let updating = Rc::new(Cell::new(false));
         let current = Rc::new(Cell::new(Range::Preset(PRESETS[0].1)));
+        let oldest = Rc::new(Cell::new(None));
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         root.add_css_class("linked");
 
@@ -161,10 +219,13 @@ impl RangePicker {
         error.set_visible(false);
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        let cols = gtk::Box::new(gtk::Orientation::Horizontal, 18);
-        cols.append(&start.widget("From"));
-        cols.append(&end.widget("To"));
-        content.append(&cols);
+        let rows = gtk::Grid::builder()
+            .column_spacing(12)
+            .row_spacing(6)
+            .build();
+        start.attach(&rows, "From", 0);
+        end.attach(&rows, "To", 1);
+        content.append(&rows);
         content.append(&error);
         apply.set_halign(gtk::Align::End);
         content.append(&apply);
@@ -175,13 +236,20 @@ impl RangePicker {
         let start = Rc::new(start);
         let end = Rc::new(end);
         {
-            let (start, end, error, current) =
-                (start.clone(), end.clone(), error.clone(), current.clone());
+            let (start, end, error, current, oldest) = (
+                start.clone(),
+                end.clone(),
+                error.clone(),
+                current.clone(),
+                oldest.clone(),
+            );
             popover.connect_show(move |_| {
                 let now = glib::DateTime::now_local()
                     .map(|d| d.to_unix())
                     .unwrap_or(0);
                 let (from, to) = current.get().bounds(now);
+                start.set_days(oldest.get());
+                end.set_days(oldest.get());
                 start.set(from);
                 end.set(to);
                 error.set_visible(false);
@@ -205,6 +273,22 @@ impl RangePicker {
             custom,
             updating,
             current,
+            oldest,
+        }
+    }
+
+    pub fn set_oldest(&self, oldest: Option<i64>) {
+        self.oldest.set(oldest);
+    }
+
+    fn highlight_custom(&self, highlighted: bool) {
+        let Some(inner_button) = self.custom.first_child() else {
+            return;
+        };
+        if highlighted {
+            inner_button.add_css_class("suggested-action");
+        } else {
+            inner_button.remove_css_class("suggested-action");
         }
     }
 
@@ -217,16 +301,45 @@ impl RangePicker {
                     b.set_active(s == secs);
                 }
                 self.custom.set_label("Custom…");
-                self.custom.remove_css_class("suggested-action");
+                self.highlight_custom(false);
             }
             Range::Custom { from, to } => {
                 for b in &self.toggles {
                     b.set_active(false);
                 }
                 self.custom.set_label(&describe(from, to));
-                self.custom.add_css_class("suggested-action");
+                self.highlight_custom(true);
             }
         }
         self.updating.set(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minutes_format_as_clock_time() {
+        assert_eq!(format_minutes(0), "00:00");
+        assert_eq!(format_minutes(9 * 60 + 5), "09:05");
+        assert_eq!(format_minutes(MINUTES_PER_DAY - 1), "23:59");
+    }
+
+    #[test]
+    fn clock_time_parses_to_minutes() {
+        assert_eq!(parse_minutes("09:05"), Some(545));
+        assert_eq!(parse_minutes(" 9:05 "), Some(545));
+        assert_eq!(parse_minutes("14"), Some(840));
+        assert_eq!(parse_minutes("23:59"), Some(1439));
+    }
+
+    #[test]
+    fn invalid_clock_time_does_not_parse() {
+        assert_eq!(parse_minutes("24:00"), None);
+        assert_eq!(parse_minutes("12:60"), None);
+        assert_eq!(parse_minutes("-1:00"), None);
+        assert_eq!(parse_minutes("9:"), None);
+        assert_eq!(parse_minutes("noon"), None);
     }
 }

@@ -26,6 +26,7 @@ pub struct Snapshot {
     pub sensor_stats: HashMap<i64, Stats>,
     pub procs: Vec<ProcUsage>,
     pub meta: Meta,
+    pub oldest: Option<i64>,
 }
 
 pub type Reply = Result<Snapshot, (u64, String)>;
@@ -75,6 +76,7 @@ fn run(path: &Path, conn: &mut Option<Connection>, req: &Request) -> Result<Snap
             sensor_stats: query::sensor_stats(c, req.from, req.to)?,
             procs: query::top_procs(c, req.from, req.to, req.top_n)?,
             meta: query::meta(c)?,
+            oldest: query::oldest_sample(c)?,
         })
     };
     q().map_err(|e| e.to_string())

@@ -200,6 +200,10 @@ pub fn meta(conn: &Connection) -> rusqlite::Result<Meta> {
     Ok(meta)
 }
 
+pub fn oldest_sample(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    conn.query_row("SELECT MIN(ts) FROM sys_samples", [], |r| r.get(0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +217,16 @@ mod tests {
             rusqlite::params![ts, dt_ms, cpu, rx],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn oldest_sample_is_none_without_samples() {
+        let conn = db::open_rw_in_memory().unwrap();
+        assert_eq!(oldest_sample(&conn).unwrap(), None);
+
+        insert_sys(&conn, 1010, 5000, None, None);
+        insert_sys(&conn, 1000, 5000, None, None);
+        assert_eq!(oldest_sample(&conn).unwrap(), Some(1000));
     }
 
     #[test]

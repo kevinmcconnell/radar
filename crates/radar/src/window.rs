@@ -320,6 +320,7 @@ impl Viewer {
         match reply {
             Ok(snap) if snap.generation == self.generation.get() => {
                 self.stack.set_visible_child_name("data");
+                self.picker.set_oldest(snap.oldest);
                 self.render(&snap);
                 *self.last.borrow_mut() = Some(snap);
             }
