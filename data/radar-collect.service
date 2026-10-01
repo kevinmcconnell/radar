@@ -1,0 +1,13 @@
+[Unit]
+Description=radar system activity collector
+
+[Service]
+ExecStart=%h/.local/bin/radar-collect
+Restart=on-failure
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=batch
+MemoryMax=64M
+
+[Install]
+WantedBy=default.target

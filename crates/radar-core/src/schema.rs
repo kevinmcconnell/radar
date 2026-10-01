@@ -1,0 +1,80 @@
+use rusqlite::Connection;
+
+const MIGRATIONS: &[&str] = &[r#"
+CREATE TABLE sys_samples (
+  ts          INTEGER PRIMARY KEY,
+  dt_ms       INTEGER NOT NULL,
+  cpu_busy    REAL,
+  cpu_iowait  REAL,
+  load1       REAL NOT NULL,
+  mem_used    INTEGER NOT NULL,
+  mem_total   INTEGER NOT NULL,
+  swap_used   INTEGER NOT NULL,
+  net_rx      INTEGER,
+  net_tx      INTEGER,
+  disk_read   INTEGER,
+  disk_write  INTEGER
+) STRICT;
+
+CREATE TABLE sensors (
+  id     INTEGER PRIMARY KEY,
+  kind   TEXT NOT NULL,
+  chip   TEXT NOT NULL,
+  label  TEXT NOT NULL,
+  unit   TEXT NOT NULL,
+  UNIQUE (kind, chip, label)
+) STRICT;
+
+CREATE TABLE sensor_samples (
+  ts         INTEGER NOT NULL,
+  sensor_id  INTEGER NOT NULL REFERENCES sensors(id),
+  value      REAL NOT NULL,
+  PRIMARY KEY (ts, sensor_id)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE proc_names (
+  id    INTEGER PRIMARY KEY,
+  name  TEXT NOT NULL UNIQUE
+) STRICT;
+
+CREATE TABLE proc_minutes (
+  ts         INTEGER NOT NULL,
+  name_id    INTEGER NOT NULL REFERENCES proc_names(id),
+  cpu_ticks  INTEGER NOT NULL,
+  PRIMARY KEY (ts, name_id)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE meta (
+  key    TEXT PRIMARY KEY,
+  value  TEXT NOT NULL
+) STRICT;
+"#];
+
+pub const VERSION: i64 = MIGRATIONS.len() as i64;
+
+pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
+    let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
+        let tx = conn.transaction()?;
+        tx.execute_batch(sql)?;
+        tx.pragma_update(None, "user_version", i as i64 + 1)?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrates_fresh_db_and_is_idempotent() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        migrate(&mut conn).unwrap();
+        let v: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, VERSION);
+    }
+}

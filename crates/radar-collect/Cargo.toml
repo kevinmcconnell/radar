@@ -1,0 +1,15 @@
+[package]
+name = "radar-collect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+radar-core.workspace = true
+rusqlite.workspace = true
+lexopt = "0.3"
+rustix = { version = "1", features = ["time", "thread", "param"] }
+signal-hook = "0.4"
+
+[lints]
+workspace = true

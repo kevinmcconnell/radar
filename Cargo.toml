@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/radar-core", "crates/radar-collect", "crates/radar", "crates/omarchy-theme"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+radar-core = { path = "crates/radar-core" }
+omarchy-theme = { path = "crates/omarchy-theme" }
+rusqlite = "0.40"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

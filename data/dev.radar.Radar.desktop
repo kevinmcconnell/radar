@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Radar
+Comment=See how busy your machine has been, and why
+Exec=radar
+Icon=dev.radar.Radar
+Terminal=false
+Categories=System;Monitor;GTK;
+Keywords=cpu;temperature;memory;network;disk;process;monitor;
+StartupNotify=true
