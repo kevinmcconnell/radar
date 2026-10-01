@@ -33,6 +33,13 @@ pub fn default_visible(s: &Sensor) -> bool {
     )
 }
 
+fn key(s: &Sensor) -> String {
+    match s.kind {
+        SensorKind::Temp => s.key(),
+        kind => format!("{}:{}", kind.as_str(), s.key()),
+    }
+}
+
 impl Config {
     pub fn load() -> Self {
         let text = std::fs::read_to_string(path()).unwrap_or_default();
@@ -73,13 +80,13 @@ impl Config {
 
     pub fn visible(&self, s: &Sensor) -> bool {
         self.sensors
-            .get(&s.key())
+            .get(&key(s))
             .copied()
             .unwrap_or_else(|| default_visible(s))
     }
 
     pub fn set_visible(&mut self, s: &Sensor, visible: bool) {
-        self.sensors.insert(s.key(), visible);
+        self.sensors.insert(key(s), visible);
     }
 }
 
@@ -95,6 +102,34 @@ mod tests {
             label: label.into(),
             unit: "°C".into(),
         }
+    }
+
+    fn fan(chip: &str, label: &str) -> Sensor {
+        Sensor {
+            kind: SensorKind::Fan,
+            unit: "RPM".into(),
+            ..temp(chip, label)
+        }
+    }
+
+    #[test]
+    fn fans_are_visible_until_hidden() {
+        let mut c = Config::default();
+        assert!(c.visible(&fan("asusec", "CPU_Opt")));
+
+        c.set_visible(&fan("asusec", "CPU_Opt"), false);
+        let c = Config::parse(&c.serialize());
+        assert!(!c.visible(&fan("asusec", "CPU_Opt")));
+    }
+
+    #[test]
+    fn fan_and_temp_with_the_same_name_are_independent() {
+        let mut c = Config::default();
+        c.set_visible(&fan("asusec", "Chipset"), false);
+        c.set_visible(&temp("asusec", "Chipset"), true);
+        let c = Config::parse(&c.serialize());
+        assert!(!c.visible(&fan("asusec", "Chipset")));
+        assert!(c.visible(&temp("asusec", "Chipset")));
     }
 
     #[test]

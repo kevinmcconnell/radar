@@ -48,6 +48,39 @@ impl Cards {
     }
 }
 
+struct SensorMenu {
+    kind: SensorKind,
+    list: gtk::Box,
+    keys: RefCell<Vec<String>>,
+}
+
+impl SensorMenu {
+    fn new(kind: SensorKind) -> Self {
+        SensorMenu {
+            kind,
+            list: gtk::Box::new(gtk::Orientation::Vertical, 2),
+            keys: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn button(&self) -> gtk::MenuButton {
+        let button = gtk::MenuButton::builder()
+            .icon_name("view-more-symbolic")
+            .tooltip_text("Choose Sensors")
+            .valign(gtk::Align::Center)
+            .build();
+        button.add_css_class("flat");
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(480)
+            .child(&self.list)
+            .build();
+        button.set_popover(Some(&gtk::Popover::builder().child(&scroll).build()));
+        button
+    }
+}
+
 struct Viewer {
     window: adw::ApplicationWindow,
     stack: gtk::Stack,
@@ -55,14 +88,14 @@ struct Viewer {
     picker: RangePicker,
     charts_column: gtk::Box,
     cards: Cards,
-    sensor_menu: gtk::Box,
+    temp_menu: SensorMenu,
+    fan_menu: SensorMenu,
     procs: ProcPanel,
     range: Cell<Range>,
     generation: Cell<u64>,
     requests: mpsc::Sender<Request>,
     last: RefCell<Option<Snapshot>>,
     config: RefCell<Config>,
-    menu_sensors: RefCell<Vec<String>>,
     theme: Theme,
     this: Weak<Viewer>,
 }
@@ -107,14 +140,14 @@ pub fn build(app: &adw::Application, db: PathBuf, preset_secs: i64, theme: Theme
             picker,
             charts_column: gtk::Box::new(gtk::Orientation::Vertical, 12),
             cards,
-            sensor_menu: gtk::Box::new(gtk::Orientation::Vertical, 2),
+            temp_menu: SensorMenu::new(SensorKind::Temp),
+            fan_menu: SensorMenu::new(SensorKind::Fan),
             procs: ProcPanel::new(),
             range: Cell::new(Range::Preset(preset_secs)),
             generation: Cell::new(0),
             requests,
             last: RefCell::new(None),
             config: RefCell::new(Config::load()),
-            menu_sensors: RefCell::new(Vec::new()),
             theme,
             this: this.clone(),
         }
@@ -173,22 +206,8 @@ impl Viewer {
             card.root.set_visible(false);
         }
 
-        let sensor_button = gtk::MenuButton::builder()
-            .icon_name("view-more-symbolic")
-            .tooltip_text("Choose Sensors")
-            .valign(gtk::Align::Center)
-            .build();
-        sensor_button.add_css_class("flat");
-        let popover_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_height(true)
-            .max_content_height(480)
-            .child(&self.sensor_menu)
-            .build();
-        sensor_button.set_popover(Some(
-            &gtk::Popover::builder().child(&popover_scroll).build(),
-        ));
-        self.cards.temps.header.append(&sensor_button);
+        self.cards.temps.header.append(&self.temp_menu.button());
+        self.cards.fans.header.append(&self.fan_menu.button());
 
         let clamp = adw::Clamp::builder()
             .maximum_size(1600)
@@ -470,30 +489,30 @@ impl Viewer {
             (&c.fans, SensorKind::Fan),
             (&c.power, SensorKind::Power),
         ] {
-            let (series, stats) = sensor_series(kind, &|_| true);
-            card.root.set_visible(!series.is_empty());
+            let (series, stats) = sensor_series(kind, &|s| config.visible(s));
+            card.root
+                .set_visible(snap.sensors.iter().any(|s| s.kind == kind));
             set(card, series, stats);
         }
         drop(config);
 
-        self.update_sensor_menu(&snap.sensors);
+        for menu in [&self.temp_menu, &self.fan_menu] {
+            self.update_sensor_menu(menu, &snap.sensors);
+        }
         let (lo, hi) = query::proc_span(snap.from, snap.to);
         self.procs.set(&snap.procs, &snap.meta, hi - lo);
     }
 
-    fn update_sensor_menu(&self, sensors: &[Sensor]) {
-        let temps: Vec<&Sensor> = sensors
-            .iter()
-            .filter(|s| s.kind == SensorKind::Temp)
-            .collect();
-        let keys: Vec<String> = temps.iter().map(|s| s.key()).collect();
-        if *self.menu_sensors.borrow() == keys {
+    fn update_sensor_menu(&self, menu: &SensorMenu, sensors: &[Sensor]) {
+        let of_kind: Vec<&Sensor> = sensors.iter().filter(|s| s.kind == menu.kind).collect();
+        let keys: Vec<String> = of_kind.iter().map(|s| s.key()).collect();
+        if *menu.keys.borrow() == keys {
             return;
         }
-        while let Some(child) = self.sensor_menu.first_child() {
-            self.sensor_menu.remove(&child);
+        while let Some(child) = menu.list.first_child() {
+            menu.list.remove(&child);
         }
-        for s in temps {
+        for s in of_kind {
             let check = gtk::CheckButton::with_label(&sensor_label(s, sensors));
             check.set_active(self.config.borrow().visible(s));
             let (sensor, viewer) = (s.clone(), self.this.clone());
@@ -508,9 +527,9 @@ impl Viewer {
                     v.render(snap);
                 }
             });
-            self.sensor_menu.append(&check);
+            menu.list.append(&check);
         }
-        *self.menu_sensors.borrow_mut() = keys;
+        *menu.keys.borrow_mut() = keys;
     }
 }
 

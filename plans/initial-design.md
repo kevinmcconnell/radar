@@ -195,7 +195,7 @@ The `install` target places this unit and enables it.
   3. **Memory** — used (filled), with total as a dashed reference line; swap as a secondary line if non-zero.
   4. **Network** — rx and tx in bytes/sec. rx filled above the axis, tx as a line, or both filled with transparency.
   5. **Disk** — read and write in bytes/sec, same style.
-  6. Optional GPU busy / battery power cards, shown only if those sensors exist.
+  6. Optional GPU busy / fans / battery power cards, shown only if those sensors exist. The fans card has the same sensor menu as Temperatures.
 - **Top processes panel** (side pane on wide windows, below the charts on narrow ones; use `AdwBreakpoint`).
   - Top N (default 10) process names by CPU time in the selected range.
   - Each row shows: name, CPU time (e.g. "2h 14m"), % of machine capacity over the range, and a horizontal bar.
