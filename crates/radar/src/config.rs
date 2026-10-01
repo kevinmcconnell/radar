@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use radar_core::{Sensor, SensorKind};
 
 /// Explicit sensor visibility choices; sensors without one use `default_visible`.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct Config {
     sensors: HashMap<String, bool>,
 }

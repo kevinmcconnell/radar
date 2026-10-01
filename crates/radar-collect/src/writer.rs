@@ -195,9 +195,9 @@ mod tests {
         let top = query::top_procs(w.conn(), 120, 120, 10).unwrap();
         assert_eq!(top[0].name, "rustc");
         assert_eq!(top[0].ticks, 75);
-        let raw = query::sensor_series(w.conn(), 0, 1000, 5, &[2]).unwrap();
+        let raw = query::sensor_series(w.conn(), 0, 1000, 5).unwrap();
         assert_eq!(raw.points.len(), 3);
-        let rolled = query::sensor_series(w.conn(), 0, 1000, SENSOR_ROLLUP_SECS, &[2]).unwrap();
+        let rolled = query::sensor_series(w.conn(), 0, 1000, SENSOR_ROLLUP_SECS).unwrap();
         assert_eq!(rolled.points.len(), 1);
         assert_eq!(rolled.points[0].value, 40.0);
         assert_eq!(rolled.stats, raw.stats);

@@ -104,14 +104,7 @@ pub fn sensor_series(
     from: i64,
     to: i64,
     bucket: i64,
-    sensor_ids: &[i64],
 ) -> rusqlite::Result<SensorData> {
-    let ids = sensor_ids
-        .iter()
-        .map(i64::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    let ids = format!("[{ids}]");
     let rolled_from =
         (from + SENSOR_ROLLUP_SECS - 1).div_euclid(SENSOR_ROLLUP_SECS) * SENSOR_ROLLUP_SECS;
     let rolled_to = (to + 1).div_euclid(SENSOR_ROLLUP_SECS) * SENSOR_ROLLUP_SECS;
@@ -129,7 +122,6 @@ pub fn sensor_series(
                SELECT ts, sensor_id, value, value, 1 FROM sensor_samples
                WHERE ts >= :rolled_to AND ts <= :to
              )
-             WHERE sensor_id IN (SELECT value FROM json_each(:ids))
              GROUP BY t, sensor_id ORDER BY t",
         )?;
         sensor_data(stmt.query(named_params! {
@@ -138,19 +130,15 @@ pub fn sensor_series(
             ":to": to,
             ":rolled_from": rolled_from,
             ":rolled_to": rolled_to,
-            ":ids": ids,
         })?)
     } else {
         let mut stmt = conn.prepare_cached(
             "SELECT (ts / :b) * :b AS t, sensor_id, sum(value), max(value), count(*)
              FROM sensor_samples
              WHERE ts BETWEEN :from AND :to
-               AND sensor_id IN (SELECT value FROM json_each(:ids))
              GROUP BY t, sensor_id ORDER BY t",
         )?;
-        sensor_data(
-            stmt.query(named_params! { ":b": bucket, ":from": from, ":to": to, ":ids": ids })?,
-        )
+        sensor_data(stmt.query(named_params! { ":b": bucket, ":from": from, ":to": to })?)
     }
 }
 
@@ -385,7 +373,7 @@ mod tests {
         db::set_meta(&conn, "clk_tck", "100").unwrap();
         db::set_meta(&conn, "ncpus", "32").unwrap();
 
-        let data = sensor_series(&conn, 100, 110, 10, &[1]).unwrap();
+        let data = sensor_series(&conn, 100, 110, 10).unwrap();
         assert_eq!(
             data.points,
             vec![
@@ -414,28 +402,6 @@ mod tests {
     }
 
     #[test]
-    fn sensor_series_reads_only_the_given_sensors() {
-        let conn = db::open_rw_in_memory().unwrap();
-        conn.execute_batch(
-            "INSERT INTO sensors VALUES (1, 'temp', 'k10temp', 'Tctl', '°C'),
-                                        (2, 'temp', 'k10temp', 'Tccd1', '°C');
-             INSERT INTO sensor_samples VALUES (100, 1, 40.0), (100, 2, 70.0);
-             INSERT INTO sensor_rollups VALUES (0, 1, 40.0, 40.0, 1), (0, 2, 70.0, 70.0, 1);",
-        )
-        .unwrap();
-
-        for bucket in [10, SENSOR_ROLLUP_SECS] {
-            let data = sensor_series(&conn, 0, 299, bucket, &[2]).unwrap();
-            assert_eq!(data.points.len(), 1);
-            assert_eq!(data.points[0].sensor_id, 2);
-            assert_eq!(data.stats.keys().collect::<Vec<_>>(), [&2]);
-
-            let none = sensor_series(&conn, 0, 299, bucket, &[]).unwrap();
-            assert!(none.points.is_empty() && none.stats.is_empty());
-        }
-    }
-
-    #[test]
     fn sensor_series_combines_rollups_into_larger_buckets() {
         let conn = db::open_rw_in_memory().unwrap();
         conn.execute_batch(
@@ -446,7 +412,7 @@ mod tests {
         )
         .unwrap();
 
-        let data = sensor_series(&conn, 900, 2099, 900, &[1]).unwrap();
+        let data = sensor_series(&conn, 900, 2099, 900).unwrap();
         assert_eq!(
             data.points,
             vec![
@@ -492,7 +458,7 @@ mod tests {
         .unwrap();
         roll_up_sensor_samples(&conn);
 
-        let data = sensor_series(&conn, 310, 1300, 300, &[1]).unwrap();
+        let data = sensor_series(&conn, 310, 1300, 300).unwrap();
         let values: Vec<(i64, f64)> = data.points.iter().map(|p| (p.t, p.value)).collect();
         assert_eq!(
             values,
@@ -506,7 +472,7 @@ mod tests {
             }
         );
 
-        let within_one_rollup = sensor_series(&conn, 300, 320, 300, &[1]).unwrap();
+        let within_one_rollup = sensor_series(&conn, 300, 320, 300).unwrap();
         assert_eq!(
             within_one_rollup.stats[&1],
             Stats {
@@ -528,8 +494,8 @@ mod tests {
 
         db::trim(&mut conn, 1000).unwrap();
 
-        let raw = sensor_series(&conn, 0, 1199, 5, &[1]).unwrap();
-        let rolled = sensor_series(&conn, 0, 1199, 300, &[1]).unwrap();
+        let raw = sensor_series(&conn, 0, 1199, 5).unwrap();
+        let rolled = sensor_series(&conn, 0, 1199, 300).unwrap();
         assert_eq!(
             raw.stats[&1],
             Stats {

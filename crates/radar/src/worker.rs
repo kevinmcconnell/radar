@@ -8,8 +8,6 @@ use radar_core::{
 };
 use rusqlite::Connection;
 
-use crate::config::Config;
-
 const START_HINT: &str =
     "Start the collector with\n<tt>systemctl --user enable --now radar-collect</tt>";
 const RESTART_HINT: &str =
@@ -21,7 +19,6 @@ pub struct Request {
     pub to: i64,
     pub bucket: i64,
     pub top_n: i64,
-    pub config: Config,
 }
 
 pub struct Snapshot {
@@ -84,20 +81,14 @@ fn run(path: &Path, conn: &mut Option<Connection>, req: &Request) -> Result<Snap
     }
     let c = conn.as_ref().unwrap();
     let q = || -> rusqlite::Result<Snapshot> {
-        let sensors = query::sensors(c)?;
-        let visible: Vec<i64> = sensors
-            .iter()
-            .filter(|s| req.config.visible(s))
-            .map(|s| s.id)
-            .collect();
-        let sensor_data = query::sensor_series(c, req.from, req.to, req.bucket, &visible)?;
+        let sensor_data = query::sensor_series(c, req.from, req.to, req.bucket)?;
         Ok(Snapshot {
             generation: req.generation,
             from: req.from,
             to: req.to,
             bucket: req.bucket,
             sys: query::sys_series(c, req.from, req.to, req.bucket)?,
-            sensors,
+            sensors: query::sensors(c)?,
             sensor_points: sensor_data.points,
             sys_stats: query::sys_stats(c, req.from, req.to)?,
             sensor_stats: sensor_data.stats,

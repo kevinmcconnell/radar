@@ -225,11 +225,11 @@ WHERE ts BETWEEN :from AND :to
 GROUP BY t ORDER BY t;
 
 -- Sensors: avg per bucket (or max for temps — make it a toggle later).
--- Only the visible sensors are read. The per-sensor avg and max for the
--- card summaries are computed from the same rows.
+-- The per-sensor avg and max for the card summaries are computed from the
+-- same rows. All sensors are read, so the sensor menus need no new query.
 SELECT (ts / :b) * :b AS t, sensor_id, sum(value), max(value), count(*)
 FROM sensor_samples
-WHERE ts BETWEEN :from AND :to AND sensor_id IN (:visible)
+WHERE ts BETWEEN :from AND :to
 GROUP BY t, sensor_id ORDER BY t;
 
 -- When the bucket is a multiple of 5 minutes, the whole rollups in the range

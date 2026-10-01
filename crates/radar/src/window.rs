@@ -346,7 +346,6 @@ impl Viewer {
             to,
             bucket,
             top_n: TOP_N,
-            config: self.config.borrow().clone(),
         });
     }
 
@@ -538,9 +537,6 @@ impl Viewer {
                 }
                 if let Some(snap) = v.last.borrow().as_ref() {
                     v.render(snap);
-                }
-                if b.is_active() {
-                    v.request();
                 }
             });
             menu.list.append(&check);
