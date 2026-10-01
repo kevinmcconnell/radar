@@ -346,6 +346,7 @@ impl Viewer {
             to,
             bucket,
             top_n: TOP_N,
+            config: self.config.borrow().clone(),
         });
     }
 
@@ -358,9 +359,7 @@ impl Viewer {
                 *self.last.borrow_mut() = Some(snap);
             }
             Err((generation, message)) if generation == self.generation.get() => {
-                self.status.set_description(Some(&format!(
-                    "{message}\n\nStart the collector with\n<tt>systemctl --user enable --now radar-collect</tt>"
-                )));
+                self.status.set_description(Some(&message));
                 self.stack.set_visible_child_name("status");
             }
             _ => {}
@@ -539,6 +538,9 @@ impl Viewer {
                 }
                 if let Some(snap) = v.last.borrow().as_ref() {
                     v.render(snap);
+                }
+                if b.is_active() {
+                    v.request();
                 }
             });
             menu.list.append(&check);

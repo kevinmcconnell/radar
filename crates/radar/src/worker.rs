@@ -3,8 +3,17 @@ use std::sync::mpsc;
 
 use std::collections::HashMap;
 
-use radar_core::{Meta, ProcUsage, Sensor, SensorPoint, Stats, SysPoint, SysStats, db, query};
+use radar_core::{
+    Meta, ProcUsage, Sensor, SensorPoint, Stats, SysPoint, SysStats, db, query, schema,
+};
 use rusqlite::Connection;
+
+use crate::config::Config;
+
+const START_HINT: &str =
+    "Start the collector with\n<tt>systemctl --user enable --now radar-collect</tt>";
+const RESTART_HINT: &str =
+    "Restart the collector with\n<tt>systemctl --user restart radar-collect</tt>";
 
 pub struct Request {
     pub generation: u64,
@@ -12,6 +21,7 @@ pub struct Request {
     pub to: i64,
     pub bucket: i64,
     pub top_n: i64,
+    pub config: Config,
 }
 
 pub struct Snapshot {
@@ -58,26 +68,43 @@ pub fn spawn(db_path: PathBuf) -> (mpsc::Sender<Request>, async_channel::Receive
 fn run(path: &Path, conn: &mut Option<Connection>, req: &Request) -> Result<Snapshot, String> {
     if conn.is_none() {
         if !path.exists() {
-            return Err(format!("No database at {}", path.display()));
+            return Err(format!("No database at {}\n\n{START_HINT}", path.display()));
         }
-        *conn = Some(db::open_ro(path).map_err(|e| e.to_string())?);
+        let opened = db::open_ro(path).map_err(|e| format!("{e}\n\n{START_HINT}"))?;
+        let version: i64 = opened
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(|e| format!("{e}\n\n{START_HINT}"))?;
+        if version != schema::VERSION {
+            return Err(format!(
+                "The database has schema version {version}, but this viewer needs version {}.\n\n{RESTART_HINT}",
+                schema::VERSION
+            ));
+        }
+        *conn = Some(opened);
     }
     let c = conn.as_ref().unwrap();
     let q = || -> rusqlite::Result<Snapshot> {
+        let sensors = query::sensors(c)?;
+        let visible: Vec<i64> = sensors
+            .iter()
+            .filter(|s| req.config.visible(s))
+            .map(|s| s.id)
+            .collect();
+        let sensor_data = query::sensor_series(c, req.from, req.to, req.bucket, &visible)?;
         Ok(Snapshot {
             generation: req.generation,
             from: req.from,
             to: req.to,
             bucket: req.bucket,
             sys: query::sys_series(c, req.from, req.to, req.bucket)?,
-            sensors: query::sensors(c)?,
-            sensor_points: query::sensor_series(c, req.from, req.to, req.bucket)?,
+            sensors,
+            sensor_points: sensor_data.points,
             sys_stats: query::sys_stats(c, req.from, req.to)?,
-            sensor_stats: query::sensor_stats(c, req.from, req.to)?,
+            sensor_stats: sensor_data.stats,
             procs: query::top_procs(c, req.from, req.to, req.top_n)?,
             meta: query::meta(c)?,
             oldest: query::oldest_sample(c)?,
         })
     };
-    q().map_err(|e| e.to_string())
+    q().map_err(|e| format!("{e}\n\n{START_HINT}"))
 }

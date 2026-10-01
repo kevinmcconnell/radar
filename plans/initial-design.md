@@ -71,6 +71,16 @@ CREATE TABLE sensor_samples (
   PRIMARY KEY (ts, sensor_id)
 ) STRICT, WITHOUT ROWID;
 
+-- 5-minute rollups of sensor_samples, updated with each sample. Long ranges read these.
+CREATE TABLE sensor_rollups (
+  ts         INTEGER NOT NULL,       -- start of the 5-minute bucket
+  sensor_id  INTEGER NOT NULL REFERENCES sensors(id),
+  total      REAL NOT NULL,          -- sum of the values
+  peak       REAL NOT NULL,
+  samples    INTEGER NOT NULL,
+  PRIMARY KEY (ts, sensor_id)
+) STRICT, WITHOUT ROWID;
+
 CREATE TABLE proc_names (
   id    INTEGER PRIMARY KEY,
   name  TEXT NOT NULL UNIQUE
@@ -214,11 +224,18 @@ FROM sys_samples
 WHERE ts BETWEEN :from AND :to
 GROUP BY t ORDER BY t;
 
--- Sensors: avg per bucket (or max for temps — make it a toggle later)
-SELECT (ts / :b) * :b AS t, sensor_id, avg(value)
+-- Sensors: avg per bucket (or max for temps — make it a toggle later).
+-- Only the visible sensors are read. The per-sensor avg and max for the
+-- card summaries are computed from the same rows.
+SELECT (ts / :b) * :b AS t, sensor_id, sum(value), max(value), count(*)
 FROM sensor_samples
-WHERE ts BETWEEN :from AND :to
+WHERE ts BETWEEN :from AND :to AND sensor_id IN (:visible)
 GROUP BY t, sensor_id ORDER BY t;
+
+-- When the bucket is a multiple of 5 minutes, the whole rollups in the range
+-- come from sensor_rollups (sum(total), max(peak), sum(samples)), which has
+-- 60 times fewer rows. The partial rollups at the two ends of the range
+-- still come from sensor_samples, so the result is the same as the raw query.
 
 -- Top processes
 SELECT n.name, sum(p.cpu_ticks) AS ticks

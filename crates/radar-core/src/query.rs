@@ -2,6 +2,7 @@ use rusqlite::{Connection, named_params};
 
 use std::collections::HashMap;
 
+use crate::schema::SENSOR_ROLLUP_SECS;
 use crate::types::{Meta, ProcUsage, Sensor, SensorKind, SensorPoint, Stats, SysPoint, SysStats};
 
 const NICE_BUCKETS: &[i64] = &[5, 10, 30, 60, 300, 900, 1800, 3600];
@@ -85,29 +86,6 @@ pub fn sys_stats(conn: &Connection, from: i64, to: i64) -> rusqlite::Result<SysS
     })
 }
 
-pub fn sensor_stats(
-    conn: &Connection,
-    from: i64,
-    to: i64,
-) -> rusqlite::Result<HashMap<i64, Stats>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT sensor_id, avg(value), max(value)
-         FROM sensor_samples
-         WHERE ts BETWEEN ?1 AND ?2
-         GROUP BY sensor_id",
-    )?;
-    let rows = stmt.query_map([from, to], |r| {
-        Ok((
-            r.get(0)?,
-            Stats {
-                avg: r.get(1)?,
-                max: r.get(2)?,
-            },
-        ))
-    })?;
-    rows.collect()
-}
-
 /// The span covered by the minute buckets that overlap `from..=to`, clipped to `to`.
 pub fn proc_span(from: i64, to: i64) -> (i64, i64) {
     let lo = from.div_euclid(60) * 60;
@@ -115,29 +93,91 @@ pub fn proc_span(from: i64, to: i64) -> (i64, i64) {
     (lo, hi.min(to.max(lo + 1)))
 }
 
+pub struct SensorData {
+    pub points: Vec<SensorPoint>,
+    pub stats: HashMap<i64, Stats>,
+}
+
+/// Reads whole rollups where `bucket` allows it, and raw samples for the rest of the range.
 pub fn sensor_series(
     conn: &Connection,
     from: i64,
     to: i64,
     bucket: i64,
-) -> rusqlite::Result<Vec<SensorPoint>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT (ts / :b) * :b AS t, sensor_id, avg(value)
-         FROM sensor_samples
-         WHERE ts BETWEEN :from AND :to
-         GROUP BY t, sensor_id ORDER BY t",
-    )?;
-    let rows = stmt.query_map(
-        named_params! { ":b": bucket, ":from": from, ":to": to },
-        |r| {
-            Ok(SensorPoint {
-                t: r.get(0)?,
-                sensor_id: r.get(1)?,
-                value: r.get(2)?,
-            })
-        },
-    )?;
-    rows.collect()
+    sensor_ids: &[i64],
+) -> rusqlite::Result<SensorData> {
+    let ids = sensor_ids
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let ids = format!("[{ids}]");
+    let rolled_from =
+        (from + SENSOR_ROLLUP_SECS - 1).div_euclid(SENSOR_ROLLUP_SECS) * SENSOR_ROLLUP_SECS;
+    let rolled_to = (to + 1).div_euclid(SENSOR_ROLLUP_SECS) * SENSOR_ROLLUP_SECS;
+
+    if bucket % SENSOR_ROLLUP_SECS == 0 && rolled_from < rolled_to {
+        let mut stmt = conn.prepare_cached(
+            "SELECT (ts / :b) * :b AS t, sensor_id, sum(total), max(peak), sum(samples)
+             FROM (
+               SELECT ts, sensor_id, total, peak, samples FROM sensor_rollups
+               WHERE ts >= :rolled_from AND ts < :rolled_to
+               UNION ALL
+               SELECT ts, sensor_id, value, value, 1 FROM sensor_samples
+               WHERE ts >= :from AND ts < :rolled_from
+               UNION ALL
+               SELECT ts, sensor_id, value, value, 1 FROM sensor_samples
+               WHERE ts >= :rolled_to AND ts <= :to
+             )
+             WHERE sensor_id IN (SELECT value FROM json_each(:ids))
+             GROUP BY t, sensor_id ORDER BY t",
+        )?;
+        sensor_data(stmt.query(named_params! {
+            ":b": bucket,
+            ":from": from,
+            ":to": to,
+            ":rolled_from": rolled_from,
+            ":rolled_to": rolled_to,
+            ":ids": ids,
+        })?)
+    } else {
+        let mut stmt = conn.prepare_cached(
+            "SELECT (ts / :b) * :b AS t, sensor_id, sum(value), max(value), count(*)
+             FROM sensor_samples
+             WHERE ts BETWEEN :from AND :to
+               AND sensor_id IN (SELECT value FROM json_each(:ids))
+             GROUP BY t, sensor_id ORDER BY t",
+        )?;
+        sensor_data(
+            stmt.query(named_params! { ":b": bucket, ":from": from, ":to": to, ":ids": ids })?,
+        )
+    }
+}
+
+fn sensor_data(mut rows: rusqlite::Rows) -> rusqlite::Result<SensorData> {
+    let mut points = Vec::new();
+    let mut totals: HashMap<i64, (f64, f64, i64)> = HashMap::new();
+    while let Some(r) = rows.next()? {
+        let (t, sensor_id): (i64, i64) = (r.get(0)?, r.get(1)?);
+        let (total, peak, samples): (f64, f64, i64) = (r.get(2)?, r.get(3)?, r.get(4)?);
+        points.push(SensorPoint {
+            t,
+            sensor_id,
+            value: total / samples as f64,
+        });
+        let sensor = totals.entry(sensor_id).or_insert((0.0, peak, 0));
+        sensor.0 += total;
+        sensor.1 = sensor.1.max(peak);
+        sensor.2 += samples;
+    }
+    let stats = totals
+        .into_iter()
+        .map(|(id, (total, peak, samples))| {
+            let avg = total / samples as f64;
+            (id, Stats { avg, max: peak })
+        })
+        .collect();
+    Ok(SensorData { points, stats })
 }
 
 pub fn top_procs(
@@ -345,9 +385,9 @@ mod tests {
         db::set_meta(&conn, "clk_tck", "100").unwrap();
         db::set_meta(&conn, "ncpus", "32").unwrap();
 
-        let pts = sensor_series(&conn, 100, 110, 10).unwrap();
+        let data = sensor_series(&conn, 100, 110, 10, &[1]).unwrap();
         assert_eq!(
-            pts,
+            data.points,
             vec![
                 SensorPoint {
                     t: 100,
@@ -362,7 +402,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            sensor_stats(&conn, 100, 110).unwrap()[&1],
+            data.stats[&1],
             Stats {
                 avg: 50.0,
                 max: 60.0
@@ -371,5 +411,132 @@ mod tests {
         let s = sensors(&conn).unwrap();
         assert_eq!(s[0].key(), "k10temp/Tctl");
         assert_eq!(meta(&conn).unwrap().ncpus, 32);
+    }
+
+    #[test]
+    fn sensor_series_reads_only_the_given_sensors() {
+        let conn = db::open_rw_in_memory().unwrap();
+        conn.execute_batch(
+            "INSERT INTO sensors VALUES (1, 'temp', 'k10temp', 'Tctl', '°C'),
+                                        (2, 'temp', 'k10temp', 'Tccd1', '°C');
+             INSERT INTO sensor_samples VALUES (100, 1, 40.0), (100, 2, 70.0);
+             INSERT INTO sensor_rollups VALUES (0, 1, 40.0, 40.0, 1), (0, 2, 70.0, 70.0, 1);",
+        )
+        .unwrap();
+
+        for bucket in [10, SENSOR_ROLLUP_SECS] {
+            let data = sensor_series(&conn, 0, 299, bucket, &[2]).unwrap();
+            assert_eq!(data.points.len(), 1);
+            assert_eq!(data.points[0].sensor_id, 2);
+            assert_eq!(data.stats.keys().collect::<Vec<_>>(), [&2]);
+
+            let none = sensor_series(&conn, 0, 299, bucket, &[]).unwrap();
+            assert!(none.points.is_empty() && none.stats.is_empty());
+        }
+    }
+
+    #[test]
+    fn sensor_series_combines_rollups_into_larger_buckets() {
+        let conn = db::open_rw_in_memory().unwrap();
+        conn.execute_batch(
+            "INSERT INTO sensors VALUES (1, 'temp', 'k10temp', 'Tctl', '°C');
+             INSERT INTO sensor_rollups VALUES (900, 1, 100.0, 60.0, 2),
+                                               (1200, 1, 60.0, 30.0, 2),
+                                               (1800, 1, 80.0, 80.0, 1);",
+        )
+        .unwrap();
+
+        let data = sensor_series(&conn, 900, 2099, 900, &[1]).unwrap();
+        assert_eq!(
+            data.points,
+            vec![
+                SensorPoint {
+                    t: 900,
+                    sensor_id: 1,
+                    value: 40.0
+                },
+                SensorPoint {
+                    t: 1800,
+                    sensor_id: 1,
+                    value: 80.0
+                },
+            ]
+        );
+        assert_eq!(
+            data.stats[&1],
+            Stats {
+                avg: 48.0,
+                max: 80.0
+            }
+        );
+    }
+
+    fn roll_up_sensor_samples(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO sensor_rollups
+             SELECT (ts / 300) * 300, sensor_id, sum(value), max(value), count(*)
+             FROM sensor_samples GROUP BY 1, 2;",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn sensor_series_reads_partial_rollups_from_raw_samples() {
+        let conn = db::open_rw_in_memory().unwrap();
+        conn.execute_batch(
+            "INSERT INTO sensors VALUES (1, 'temp', 'k10temp', 'Tctl', '°C');
+             INSERT INTO sensor_samples VALUES
+               (100, 1, 10.0), (310, 1, 20.0), (580, 1, 90.0), (600, 1, 30.0), (899, 1, 50.0),
+               (900, 1, 70.0), (1250, 1, 40.0), (1400, 1, 99.0);",
+        )
+        .unwrap();
+        roll_up_sensor_samples(&conn);
+
+        let data = sensor_series(&conn, 310, 1300, 300, &[1]).unwrap();
+        let values: Vec<(i64, f64)> = data.points.iter().map(|p| (p.t, p.value)).collect();
+        assert_eq!(
+            values,
+            [(300, 55.0), (600, 40.0), (900, 70.0), (1200, 40.0)]
+        );
+        assert_eq!(
+            data.stats[&1],
+            Stats {
+                avg: 50.0,
+                max: 90.0
+            }
+        );
+
+        let within_one_rollup = sensor_series(&conn, 300, 320, 300, &[1]).unwrap();
+        assert_eq!(
+            within_one_rollup.stats[&1],
+            Stats {
+                avg: 20.0,
+                max: 20.0
+            }
+        );
+    }
+
+    #[test]
+    fn trim_keeps_sensor_samples_and_rollups_in_step() {
+        let mut conn = db::open_rw_in_memory().unwrap();
+        conn.execute_batch(
+            "INSERT INTO sensors VALUES (1, 'temp', 'k10temp', 'Tctl', '°C');
+             INSERT INTO sensor_samples VALUES (590, 1, 5.0), (900, 1, 10.0), (1000, 1, 50.0);",
+        )
+        .unwrap();
+        roll_up_sensor_samples(&conn);
+
+        db::trim(&mut conn, 1000).unwrap();
+
+        let raw = sensor_series(&conn, 0, 1199, 5, &[1]).unwrap();
+        let rolled = sensor_series(&conn, 0, 1199, 300, &[1]).unwrap();
+        assert_eq!(
+            raw.stats[&1],
+            Stats {
+                avg: 30.0,
+                max: 50.0
+            }
+        );
+        assert_eq!(rolled.stats, raw.stats);
     }
 }
