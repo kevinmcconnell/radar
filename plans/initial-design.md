@@ -186,7 +186,7 @@ The `install` target places this unit and enables it.
 - **Range picker** in the header:
   - Linked toggle buttons for presets: 1h, 6h, 24h, 3d, 5d.
   - A "Custom…" button opening a popover with start and end day (`GtkDropDown` of the days that have data) and time (one `HH:MM` spin button).
-  - Presets ending at "now" auto-refresh every 5s. Custom ranges are static.
+  - Presets ending at "now" auto-refresh: every 5s for 1h, less often for longer ranges, up to every 60s. Custom ranges are static.
 - **Main area**: a scrollable vertical stack of chart cards, each with a title, current/avg/max summary text, and the chart:
   1. **CPU** — busy % (filled), iowait % (thin line). Y axis fixed 0–100.
   2. **Temperatures** — one line per sensor.

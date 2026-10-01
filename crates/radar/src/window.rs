@@ -18,7 +18,9 @@ use crate::procs::ProcPanel;
 use crate::range::{Range, RangePicker};
 use crate::worker::{self, Request, Snapshot};
 
-const REFRESH_SECS: u32 = 5;
+const REFRESH_TICK_SECS: u32 = 5;
+const MAX_REFRESH_SECS: i64 = 60;
+const REFRESHES_PER_RANGE: i64 = 720;
 const TOP_N: i64 = 10;
 const DEFAULT_WIDTH_PX: i32 = 800;
 
@@ -93,6 +95,7 @@ struct Viewer {
     procs: ProcPanel,
     range: Cell<Range>,
     generation: Cell<u64>,
+    secs_since_request: Cell<u32>,
     requests: mpsc::Sender<Request>,
     last: RefCell<Option<Snapshot>>,
     config: RefCell<Config>,
@@ -145,6 +148,7 @@ pub fn build(app: &adw::Application, db: PathBuf, preset_secs: i64, theme: Theme
             procs: ProcPanel::new(),
             range: Cell::new(Range::Preset(preset_secs)),
             generation: Cell::new(0),
+            secs_since_request: Cell::new(0),
             requests,
             last: RefCell::new(None),
             config: RefCell::new(Config::load()),
@@ -173,12 +177,17 @@ pub fn build(app: &adw::Application, db: PathBuf, preset_secs: i64, theme: Theme
     });
 
     let weak = Rc::downgrade(&viewer);
-    glib::timeout_add_seconds_local(REFRESH_SECS, move || {
+    glib::timeout_add_seconds_local(REFRESH_TICK_SECS, move || {
         let Some(v) = weak.upgrade() else {
             return glib::ControlFlow::Break;
         };
-        if matches!(v.range.get(), Range::Preset(_)) {
-            v.request();
+        if let Range::Preset(range_secs) = v.range.get() {
+            let waited = v.secs_since_request.get() + REFRESH_TICK_SECS;
+            if waited >= refresh_secs(range_secs) {
+                v.request();
+            } else {
+                v.secs_since_request.set(waited);
+            }
         }
         glib::ControlFlow::Continue
     });
@@ -188,6 +197,10 @@ pub fn build(app: &adw::Application, db: PathBuf, preset_secs: i64, theme: Theme
 
     let owner = RefCell::new(Some(viewer));
     window.connect_destroy(move |_| drop(owner.take()));
+}
+
+fn refresh_secs(range_secs: i64) -> u32 {
+    (range_secs / REFRESHES_PER_RANGE).clamp(REFRESH_TICK_SECS as i64, MAX_REFRESH_SECS) as u32
 }
 
 fn now() -> i64 {
@@ -325,6 +338,7 @@ impl Viewer {
         let width = if width > 0 { width } else { DEFAULT_WIDTH_PX };
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
+        self.secs_since_request.set(0);
         let bucket = query::nice_bucket(to - from, width);
         let _ = self.requests.send(Request {
             generation,
@@ -555,6 +569,14 @@ fn sensor_label(s: &Sensor, all: &[Sensor]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn longer_ranges_refresh_less_often() {
+        assert_eq!(refresh_secs(3600), 5);
+        assert_eq!(refresh_secs(6 * 3600), 30);
+        assert_eq!(refresh_secs(86400), 60);
+        assert_eq!(refresh_secs(5 * 86400), 60);
+    }
 
     fn temp(chip: &str, label: &str) -> Sensor {
         Sensor {
