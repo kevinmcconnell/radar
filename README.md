@@ -42,6 +42,18 @@ The database lives at `~/.local/share/radar/radar.db`. Run
 `radar-collect --help` for the sampling interval and retention flags, and
 `radar --help` for the viewer's options.
 
+## Releasing
+
+The version is set in one place, `[workspace.package]` in `Cargo.toml`.
+
+1. Set the version in `Cargo.toml`, then run `cargo build` to update
+   `Cargo.lock`.
+2. Commit the two files as "Release radar 0.2.0".
+3. Tag the commit `v0.2.0` and push the commit and the tag.
+
+CI checks that the tag matches the version, runs the checks, and publishes
+the GitHub release.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
