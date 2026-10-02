@@ -6,17 +6,32 @@ use radar_core::SensorKind;
 const MIN_PLAUSIBLE_MILLIDEGREES: i64 = -40_000;
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum Reading {
+    File { path: PathBuf, scale: f64 },
+    BusyFreq,
+    FastestFreq,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SensorSource {
     pub kind: SensorKind,
     pub chip: String,
     pub label: String,
+    pub reading: Reading,
+}
+
+/// Clock speed in kHz of one CPU thread. `core` numbers the physical cores from 0.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoreFreq {
+    pub cpu: usize,
+    pub core: usize,
     pub path: PathBuf,
-    pub scale: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Discovery {
     pub sensors: Vec<SensorSource>,
+    pub core_freqs: Vec<CoreFreq>,
     pub net_ifaces: Vec<String>,
     pub disks: Vec<String>,
 }
@@ -25,8 +40,13 @@ pub fn discover(root: &Path) -> Discovery {
     let mut sensors = hwmon_sensors(root);
     sensors.extend(gpu_busy_sensors(root));
     sensors.extend(battery_sensors(root));
+    let core_freqs = core_freqs(root);
+    if !core_freqs.is_empty() {
+        sensors.extend(cpu_freq_sensors());
+    }
     Discovery {
         sensors,
+        core_freqs,
         net_ifaces: entries_with_device(&root.join("sys/class/net")),
         disks: entries_with_device(&root.join("sys/block")),
     }
@@ -136,8 +156,7 @@ fn hwmon_sensors(root: &Path) -> Vec<SensorSource> {
                     kind,
                     chip: chip.clone(),
                     label,
-                    path,
-                    scale,
+                    reading: Reading::File { path, scale },
                 },
             ));
         }
@@ -159,8 +178,7 @@ fn gpu_busy_sensors(root: &Path) -> Vec<SensorSource> {
                 kind: SensorKind::GpuBusy,
                 chip,
                 label: name,
-                path,
-                scale: 1.0,
+                reading: Reading::File { path, scale: 1.0 },
             })
         })
         .collect()
@@ -177,11 +195,45 @@ fn battery_sensors(root: &Path) -> Vec<SensorSource> {
                 kind: SensorKind::Power,
                 chip: "battery".into(),
                 label: name,
-                path,
-                scale: 1e-6,
+                reading: Reading::File { path, scale: 1e-6 },
             })
         })
         .collect()
+}
+
+fn core_freqs(root: &Path) -> Vec<CoreFreq> {
+    let mut physical: Vec<(i64, i64)> = Vec::new();
+    sorted_entries(&root.join("sys/devices/system/cpu"))
+        .into_iter()
+        .filter_map(|(name, dir)| {
+            let cpu: usize = name.strip_prefix("cpu")?.parse().ok()?;
+            let path = dir.join("cpufreq/scaling_cur_freq");
+            read_number(&path)?;
+            let topology = |file: &str| read_number(&dir.join("topology").join(file));
+            let key = match (topology("physical_package_id"), topology("core_id")) {
+                (Some(package), Some(core)) => (package, core),
+                _ => (-1, cpu as i64),
+            };
+            let core = physical.iter().position(|k| *k == key).unwrap_or_else(|| {
+                physical.push(key);
+                physical.len() - 1
+            });
+            Some(CoreFreq { cpu, core, path })
+        })
+        .collect()
+}
+
+fn cpu_freq_sensors() -> [SensorSource; 2] {
+    [
+        ("busy cores", Reading::BusyFreq),
+        ("fastest core", Reading::FastestFreq),
+    ]
+    .map(|(label, reading)| SensorSource {
+        kind: SensorKind::Freq,
+        chip: "cpu".into(),
+        label: label.into(),
+        reading,
+    })
 }
 
 #[cfg(test)]
@@ -225,6 +277,8 @@ mod tests {
                 t("spd5118:8-0053", "temp1"),
                 (SensorKind::GpuBusy, "amdgpu".into(), "card1".into()),
                 (SensorKind::Power, "battery".into(), "BAT0".into()),
+                (SensorKind::Freq, "cpu".into(), "busy cores".into()),
+                (SensorKind::Freq, "cpu".into(), "fastest core".into()),
             ]
         );
     }
@@ -234,6 +288,12 @@ mod tests {
         let d = amd();
         assert_eq!(d.net_ifaces, vec!["enp12s0", "enp13s0"]);
         assert_eq!(d.disks, vec!["nvme0n1", "nvme2n1"]);
+    }
+
+    #[test]
+    fn discovers_core_clock_speeds() {
+        let cores: Vec<(usize, usize)> = amd().core_freqs.iter().map(|c| (c.cpu, c.core)).collect();
+        assert_eq!(cores, vec![(0, 0), (1, 0), (2, 1)]);
     }
 
     #[test]

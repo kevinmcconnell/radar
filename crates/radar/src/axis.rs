@@ -6,6 +6,7 @@ pub enum Format {
     BytesPerSec,
     Rpm,
     Watts,
+    Frequency,
 }
 
 impl Format {
@@ -21,6 +22,8 @@ impl Format {
             Format::BytesPerSec => format!("{}/s", human_bytes(v)),
             Format::Rpm => format!("{} rpm", trim_float(v, 0)),
             Format::Watts => format!("{} W", trim_float(v, 1)),
+            Format::Frequency if v >= 1000.0 => format!("{} GHz", trim_float(v / 1000.0, 2)),
+            Format::Frequency => format!("{} MHz", trim_float(v, 0)),
         }
     }
 }
@@ -169,6 +172,9 @@ mod tests {
         assert_eq!(Format::Percent.format(2.5), "2.5%");
         assert_eq!(Format::Percent.format(50.0), "50%");
         assert_eq!(Format::Celsius.format(52.4), "52°C");
+        assert_eq!(Format::Frequency.format(4853.2), "4.85 GHz");
+        assert_eq!(Format::Frequency.format(4000.0), "4 GHz");
+        assert_eq!(Format::Frequency.format(624.194), "624 MHz");
     }
 
     #[test]

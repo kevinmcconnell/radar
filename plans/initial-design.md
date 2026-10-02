@@ -57,10 +57,10 @@ CREATE TABLE sys_samples (
 -- Discovered gauges: temperatures, plus optional fans / gpu busy / battery power.
 CREATE TABLE sensors (
   id     INTEGER PRIMARY KEY,
-  kind   TEXT NOT NULL,              -- 'temp' | 'fan' | 'gpu_busy' | 'power'
+  kind   TEXT NOT NULL,              -- 'temp' | 'fan' | 'gpu_busy' | 'power' | 'freq'
   chip   TEXT NOT NULL,              -- e.g. 'k10temp', 'amdgpu', 'nvme', 'coretemp'
   label  TEXT NOT NULL,              -- e.g. 'Tctl', 'Tccd1', 'edge', 'Composite'
-  unit   TEXT NOT NULL,              -- '°C', 'rpm', '%', 'W'
+  unit   TEXT NOT NULL,              -- '°C', 'rpm', '%', 'W', 'MHz'
   UNIQUE (kind, chip, label)
 ) STRICT;
 
@@ -134,6 +134,7 @@ Expected size at 5 days: ~86k `sys_samples` rows, a few hundred thousand `sensor
 | Fans (optional) | hwmon `fan*_input` | Only if present and non-zero at discovery. |
 | GPU busy (optional) | `/sys/class/drm/card*/device/gpu_busy_percent` | Present on amdgpu. |
 | Battery power (optional) | `/sys/class/power_supply/BAT*/power_now` | Microwatts; laptops only. |
+| CPU clock (optional) | `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq` | kHz per CPU thread. The threads of one physical core (`topology/physical_package_id` and `core_id`) share a clock, so a core has the highest speed and the highest busy share of its threads. An idle thread reports the minimum speed. Stored as two sensors on chip `cpu`: `busy cores` (mean over the cores that were busy for at least 90% of the interval, weighted by their busy share from the `cpuN` lines of `/proc/stat`; no value when there is no such core) and `fastest core`. Under sustained load, `busy cores` drops when the CPU throttles. |
 | Per-process CPU | `/proc/[pid]/stat` | See below. |
 
 Re-run sensor, interface and disk discovery every 5 minutes, to handle hotplug (USB NICs, docks).
@@ -199,13 +200,14 @@ The `install` target places this unit and enables it.
   - Presets ending at "now" auto-refresh: every 5s for 1h, less often for longer ranges, up to every 60s. Custom ranges are static.
 - **Main area**: a scrollable vertical stack of chart cards, each with a title, current/avg/max summary text, and the chart:
   1. **CPU** — busy % (filled), iowait % (thin line). Y axis fixed 0–100.
-  2. **Temperatures** — one line per sensor.
+  2. **CPU Clock** — clock speed of the busy cores (filled) and of the fastest core (line). Shown only if cpufreq exists.
+  3. **Temperatures** — one line per sensor.
      - Default visible: CPU sensors (`k10temp` `Tctl` or `coretemp` `Package id 0`), plus `amdgpu edge` and `nvme Composite` if present.
      - A small menu lets the user toggle sensors on and off. Persist the choice in GSettings or a small config file.
-  3. **Memory** — used (filled), with total as a dashed reference line; swap as a secondary line if non-zero.
-  4. **Network** — rx and tx in bytes/sec. rx filled above the axis, tx as a line, or both filled with transparency.
-  5. **Disk** — read and write in bytes/sec, same style.
-  6. Optional GPU busy / fans / battery power cards, shown only if those sensors exist. The fans card has the same sensor menu as Temperatures.
+  4. **Memory** — used (filled), with total as a dashed reference line; swap as a secondary line if non-zero.
+  5. **Network** — rx and tx in bytes/sec. rx filled above the axis, tx as a line, or both filled with transparency.
+  6. **Disk** — read and write in bytes/sec, same style.
+  7. Optional GPU busy / fans / battery power cards, shown only if those sensors exist. The fans card has the same sensor menu as Temperatures.
 - **Top processes panel** (side pane on wide windows, below the charts on narrow ones; use `AdwBreakpoint`).
   - Top N (default 10) process names by CPU time in the selected range.
   - Each row shows: name, CPU time (e.g. "2h 14m"), % of machine capacity over the range, and a horizontal bar.

@@ -35,6 +35,7 @@ pub enum SensorKind {
     Fan,
     GpuBusy,
     Power,
+    Freq,
 }
 
 impl SensorKind {
@@ -44,6 +45,7 @@ impl SensorKind {
             SensorKind::Fan => "fan",
             SensorKind::GpuBusy => "gpu_busy",
             SensorKind::Power => "power",
+            SensorKind::Freq => "freq",
         }
     }
 
@@ -53,6 +55,7 @@ impl SensorKind {
             "fan" => SensorKind::Fan,
             "gpu_busy" => SensorKind::GpuBusy,
             "power" => SensorKind::Power,
+            "freq" => SensorKind::Freq,
             _ => return None,
         })
     }
@@ -63,6 +66,7 @@ impl SensorKind {
             SensorKind::Fan => "rpm",
             SensorKind::GpuBusy => "%",
             SensorKind::Power => "W",
+            SensorKind::Freq => "MHz",
         }
     }
 }

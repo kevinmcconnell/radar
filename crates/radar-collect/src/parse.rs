@@ -56,6 +56,25 @@ pub fn parse_cpu_stat(buf: &[u8]) -> Option<CpuTimes> {
     if it.next()? != b"cpu" {
         return None;
     }
+    parse_cpu_times(it)
+}
+
+pub fn parse_core_stats(buf: &[u8], mut f: impl FnMut(usize, CpuTimes)) {
+    for line in buf.split(|&b| b == b'\n') {
+        let mut it = fields(line);
+        let core = it
+            .next()
+            .and_then(|name| name.strip_prefix(b"cpu"))
+            .and_then(parse_u64);
+        if let Some(core) = core
+            && let Some(times) = parse_cpu_times(it)
+        {
+            f(core as usize, times);
+        }
+    }
+}
+
+fn parse_cpu_times<'a>(it: impl Iterator<Item = &'a [u8]>) -> Option<CpuTimes> {
     // user nice system idle iowait irq softirq steal; guest time is already in user/nice
     let mut vals = [0u64; 8];
     let mut n = 0;
@@ -189,6 +208,36 @@ mod tests {
             3
         );
         assert_eq!(count_cpus(b""), 0);
+    }
+
+    #[test]
+    fn core_stats() {
+        let mut out = Vec::new();
+        parse_core_stats(
+            b"cpu  9 9 9 9 9\ncpu0 1 2 3 4 5\ncpu11 10 0 0 20 30 40\nintr 1 2 3\n",
+            |core, t| out.push((core, t)),
+        );
+        assert_eq!(
+            out,
+            vec![
+                (
+                    0,
+                    CpuTimes {
+                        total: 15,
+                        idle: 4,
+                        iowait: 5
+                    }
+                ),
+                (
+                    11,
+                    CpuTimes {
+                        total: 100,
+                        idle: 20,
+                        iowait: 30
+                    }
+                ),
+            ]
+        );
     }
 
     #[test]

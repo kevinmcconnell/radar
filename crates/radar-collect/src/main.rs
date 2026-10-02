@@ -13,6 +13,7 @@ use std::time::Duration;
 use radar_core::db;
 
 use crate::cli::{Args, Mode};
+use crate::discover::Reading;
 use crate::sampler::Sampler;
 use crate::writer::Writer;
 
@@ -193,12 +194,18 @@ fn list_sensors(root: &Path) {
     let d = discover::discover(root);
     println!("sensors:");
     for s in &d.sensors {
+        let source = match &s.reading {
+            Reading::File { path, .. } => path.display().to_string(),
+            Reading::BusyFreq | Reading::FastestFreq => {
+                format!("{} cpus, cpufreq/scaling_cur_freq", d.core_freqs.len())
+            }
+        };
         println!(
             "  {:<10} {:<22} {:<12} {}",
             s.kind.as_str(),
             s.chip,
             s.label,
-            s.path.display()
+            source
         );
     }
     println!("network interfaces: {}", d.net_ifaces.join(" "));

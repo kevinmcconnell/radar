@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use crate::discover::{Discovery, discover};
+use crate::discover::{Discovery, Reading, discover};
 use crate::parse::{self, CpuTimes, PidStat};
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -37,6 +37,26 @@ pub fn cpu_percentages(prev: CpuTimes, cur: CpuTimes) -> Option<(f64, f64)> {
         busy as f64 * 100.0 / total as f64,
         iowait as f64 * 100.0 / total as f64,
     ))
+}
+
+/// A core that is idle when its clock speed is read reports the minimum speed.
+const BUSY_CORE_PERCENT: f64 = 90.0;
+
+/// (busy-weighted mean of the busy cores, fastest) in MHz, from the (kHz, busy percent) of
+/// each physical core. A core with no reading has 0 kHz.
+pub fn core_frequencies(cores: impl Iterator<Item = (f64, f64)>) -> (Option<f64>, Option<f64>) {
+    let (mut weighted, mut busy, mut fastest) = (0.0, 0.0, None::<f64>);
+    for (khz, percent) in cores.filter(|c| c.0 > 0.0) {
+        if percent >= BUSY_CORE_PERCENT {
+            weighted += khz * percent;
+            busy += percent;
+        }
+        fastest = Some(fastest.map_or(khz, |f| f.max(khz)));
+    }
+    (
+        (busy > 0.0).then(|| weighted / busy / 1000.0),
+        fastest.map(|f| f / 1000.0),
+    )
 }
 
 /// Byte counters for a set of named devices, summed into one delta per sample.
@@ -181,6 +201,9 @@ pub struct Sampler {
     pid_path: String,
     clk_tck: u64,
     cpu_prev: Option<CpuTimes>,
+    core_prev: Vec<Option<CpuTimes>>,
+    core_busy: Vec<f64>,
+    physical_cores: Vec<(f64, f64)>,
     net: PairCounters,
     disk: PairCounters,
     pub discovery: Discovery,
@@ -210,6 +233,9 @@ impl Sampler {
             pid_path: String::with_capacity(64),
             clk_tck,
             cpu_prev: None,
+            core_prev: Vec::new(),
+            core_busy: Vec::new(),
+            physical_cores: Vec::new(),
             net: PairCounters::default(),
             disk: PairCounters::default(),
             discovery: Discovery::default(),
@@ -222,6 +248,12 @@ impl Sampler {
 
     pub fn rediscover(&mut self) {
         self.discovery = discover(&self.root);
+        let freqs = &self.discovery.core_freqs;
+        let cpus = freqs.iter().map(|c| c.cpu + 1).max().unwrap_or(0);
+        let cores = freqs.iter().map(|c| c.core + 1).max().unwrap_or(0);
+        self.core_prev.resize(cpus, None);
+        self.core_busy.resize(cpus, 0.0);
+        self.physical_cores.resize(cores, (0.0, 0.0));
         self.net.set_names(&self.discovery.net_ifaces);
         self.disk.set_names(&self.discovery.disks);
         self.procs.totals.clear();
@@ -229,6 +261,7 @@ impl Sampler {
 
     pub fn reset_baselines(&mut self) {
         self.cpu_prev = None;
+        self.core_prev.fill(None);
         self.net.reset();
         self.disk.reset();
         self.procs.reset();
@@ -248,6 +281,17 @@ impl Sampler {
         s.cpu_busy = pcts.map(|p| p.0);
         s.cpu_iowait = pcts.map(|p| p.1);
         self.cpu_prev = cpu;
+
+        self.core_busy.fill(0.0);
+        let (core_prev, core_busy) = (&mut self.core_prev, &mut self.core_busy);
+        parse::parse_core_stats(&self.buf, |core, cur| {
+            if let (Some(prev), Some(busy)) = (core_prev.get_mut(core), core_busy.get_mut(core)) {
+                *busy = prev
+                    .and_then(|p| cpu_percentages(p, cur))
+                    .map_or(0.0, |p| p.0);
+                *prev = Some(cur);
+            }
+        });
 
         read_into(&self.loadavg_path, &mut self.buf)?;
         s.load1 = parse::parse_loadavg(&self.buf).unwrap_or(0.0);
@@ -270,12 +314,30 @@ impl Sampler {
         s.disk_read = disk.map(|d| d.0 as i64);
         s.disk_write = disk.map(|d| d.1 as i64);
 
+        self.physical_cores.fill((0.0, 0.0));
+        for f in &self.discovery.core_freqs {
+            if read_into(&f.path, &mut self.buf).is_ok()
+                && let Some(khz) = parse::parse_u64(parse::trim(&self.buf))
+            {
+                let (core_khz, core_busy) = &mut self.physical_cores[f.core];
+                *core_khz = core_khz.max(khz as f64);
+                *core_busy = core_busy.max(self.core_busy[f.cpu]);
+            }
+        }
+        let (busy_freq, fastest_freq) = core_frequencies(self.physical_cores.iter().copied());
+
         s.sensors.clear();
         for (i, src) in self.discovery.sensors.iter().enumerate() {
-            if read_into(&src.path, &mut self.buf).is_ok()
-                && let Some(v) = parse::parse_i64(parse::trim(&self.buf))
-            {
-                s.sensors.push((i, v as f64 * src.scale));
+            let value = match &src.reading {
+                Reading::File { path, scale } => read_into(path, &mut self.buf)
+                    .ok()
+                    .and_then(|()| parse::parse_i64(parse::trim(&self.buf)))
+                    .map(|v| v as f64 * scale),
+                Reading::BusyFreq => busy_freq,
+                Reading::FastestFreq => fastest_freq,
+            };
+            if let Some(v) = value {
+                s.sensors.push((i, v));
             }
         }
 
@@ -348,6 +410,23 @@ mod tests {
         assert_eq!(cpu_percentages(p, c), Some((15.0, 5.0)));
         assert_eq!(cpu_percentages(p, p), None);
         assert_eq!(cpu_percentages(c, p), None);
+    }
+
+    #[test]
+    fn core_frequencies_weigh_busy_cores() {
+        let cores = [
+            (5_000_000.0, 100.0),
+            (4_000_000.0, 100.0),
+            (600_000.0, 89.0),
+            (0.0, 100.0),
+        ];
+        assert_eq!(
+            core_frequencies(cores.into_iter()),
+            (Some(4500.0), Some(5000.0))
+        );
+        let idle = [(600_000.0, 0.0), (5_000_000.0, 10.0)];
+        assert_eq!(core_frequencies(idle.into_iter()), (None, Some(5000.0)));
+        assert_eq!(core_frequencies(std::iter::empty()), (None, None));
     }
 
     #[test]
@@ -485,6 +564,19 @@ mod tests {
             .position(|x| x.label == "Tctl")
             .unwrap();
         assert!(first.sensors.contains(&(tctl, 52.125)));
+        let freq = |label: &str| {
+            s.discovery
+                .sensors
+                .iter()
+                .position(|x| x.label == label)
+                .unwrap()
+        };
+        let (busy, fastest) = (freq("busy cores"), freq("fastest core"));
+        assert!(first.sensors.contains(&(fastest, 5585.369)));
+        assert!(
+            first.sensors.iter().all(|x| x.0 != busy),
+            "no busy cores without a cpu delta"
+        );
 
         s.take(1005, 5000).unwrap();
         let second = &s.sample;

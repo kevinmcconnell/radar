@@ -4,7 +4,7 @@ use std::path::Path;
 use radar_core::{SensorKind, db};
 use rusqlite::Connection;
 
-use crate::discover::SensorSource;
+use crate::discover::{Reading, SensorSource};
 use crate::sampler::Sample;
 use crate::sys;
 use crate::writer::Writer;
@@ -37,8 +37,10 @@ fn sensor(kind: SensorKind, chip: &str, label: &str) -> SensorSource {
         kind,
         chip: chip.into(),
         label: label.into(),
-        path: Default::default(),
-        scale: 1.0,
+        reading: Reading::File {
+            path: Default::default(),
+            scale: 1.0,
+        },
     }
 }
 
@@ -91,6 +93,8 @@ pub fn seed(path: &Path, root: &Path, days: u64, interval: i64) -> Result<(), Bo
         sensor(SensorKind::Temp, "nvme:nvme0", "Composite"),
         sensor(SensorKind::Fan, "asusec:asus-ec-sensors", "CPU_Opt"),
         sensor(SensorKind::GpuBusy, "amdgpu", "card1"),
+        sensor(SensorKind::Freq, "cpu", "busy cores"),
+        sensor(SensorKind::Freq, "cpu", "fastest core"),
     ];
     writer.register_sensors(&sensors)?;
 
@@ -203,6 +207,7 @@ pub fn seed(path: &Path, root: &Path, days: u64, interval: i64) -> Result<(), Bo
             sample.disk_write = Some(write as i64);
         }
         let edge = 38.0 + gpu * 0.4 + rng.range(-0.3, 0.3);
+        let throttle = (tctl - 70.0).max(0.0) * 25.0;
         sample.sensors.clear();
         sample.sensors.extend([
             (0, tctl),
@@ -213,7 +218,13 @@ pub fn seed(path: &Path, root: &Path, days: u64, interval: i64) -> Result<(), Bo
             (5, nvme + rng.range(-0.3, 0.3)),
             (6, 550.0 + cpu * 9.0 + rng.range(-20.0, 20.0)),
             (7, gpu),
+            (9, 5700.0 - throttle * 0.5 + rng.range(-40.0, 40.0)),
         ]);
+        if !after_gap {
+            sample
+                .sensors
+                .push((8, 5300.0 - cpu * 5.0 - throttle + rng.range(-80.0, 80.0)));
+        }
 
         procs.clear();
         if !after_gap {

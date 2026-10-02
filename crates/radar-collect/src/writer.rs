@@ -158,6 +158,7 @@ fn name_id(tx: &Transaction, name: &[u8]) -> rusqlite::Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discover::Reading;
     use radar_core::{SensorKind, query};
 
     fn sensor(chip: &str, label: &str) -> SensorSource {
@@ -165,8 +166,10 @@ mod tests {
             kind: SensorKind::Temp,
             chip: chip.into(),
             label: label.into(),
-            path: "/x".into(),
-            scale: 1.0,
+            reading: Reading::File {
+                path: "/x".into(),
+                scale: 1.0,
+            },
         }
     }
 

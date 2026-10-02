@@ -26,6 +26,7 @@ const DEFAULT_WIDTH_PX: i32 = 800;
 
 struct Cards {
     cpu: Card,
+    freq: Card,
     temps: Card,
     mem: Card,
     net: Card,
@@ -36,9 +37,10 @@ struct Cards {
 }
 
 impl Cards {
-    fn all(&self) -> [&Card; 8] {
+    fn all(&self) -> [&Card; 9] {
         [
             &self.cpu,
+            &self.freq,
             &self.temps,
             &self.mem,
             &self.net,
@@ -124,6 +126,7 @@ pub fn build(app: &adw::Application, db: PathBuf, preset_secs: i64, theme: Theme
         });
         let cards = Cards {
             cpu: Card::new("CPU", Format::Percent, YRange::Fixed(100.0)),
+            freq: Card::new("CPU Clock", Format::Frequency, YRange::Auto),
             temps: Card::new("Temperatures", Format::Celsius, YRange::Auto),
             mem: Card::new("Memory", Format::Bytes, YRange::Auto),
             net: Card::new("Network", Format::BytesPerSec, YRange::Auto),
@@ -215,7 +218,12 @@ impl Viewer {
         for card in self.cards.all() {
             self.charts_column.append(&card.root);
         }
-        for card in [&self.cards.gpu, &self.cards.fans, &self.cards.power] {
+        for card in [
+            &self.cards.freq,
+            &self.cards.gpu,
+            &self.cards.fans,
+            &self.cards.power,
+        ] {
             card.root.set_visible(false);
         }
 
@@ -484,10 +492,10 @@ impl Viewer {
                             ColorRole::Named(CYCLE[i % CYCLE.len()])
                         };
                         let points = by_sensor.get(&s.id).cloned().unwrap_or_default();
-                        let style = if kind == SensorKind::Temp {
-                            Style::Line
-                        } else {
-                            Style::Fill
+                        let style = match kind {
+                            SensorKind::Temp => Style::Line,
+                            SensorKind::Freq if i > 0 => Style::Line,
+                            _ => Style::Fill,
                         };
                         line(&sensor_label(s, &snap.sensors), points, style, color)
                     })
@@ -497,6 +505,7 @@ impl Viewer {
         let (series, stats) = sensor_series(SensorKind::Temp, &|s| config.visible(s));
         set(&c.temps, series, stats);
         for (card, kind) in [
+            (&c.freq, SensorKind::Freq),
             (&c.gpu, SensorKind::GpuBusy),
             (&c.fans, SensorKind::Fan),
             (&c.power, SensorKind::Power),
