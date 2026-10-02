@@ -1,0 +1,22 @@
+name: Set up build environment
+description: Install the Rust toolchain and native libraries in the Arch container
+
+inputs:
+  cache:
+    description: Restore and save the Cargo build cache with mr boxington
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install packages
+      shell: bash
+      run: |
+        pacman -Syu --noconfirm --needed \
+          rust pkgconf \
+          gtk4 libadwaita sqlite
+    - name: Set up build cache
+      if: inputs.cache == 'true'
+      uses: jdx/mr-boxington-action@v1
+      with:
+        github-cache-mode: objects
