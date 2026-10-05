@@ -607,8 +607,8 @@ mod tests {
                 .position(|x| x.chip == chip && x.label == label)
                 .unwrap()
         };
-        assert!(first.sensors.contains(&(agent("codex", "7d"), 28.0)));
-        assert!(first.sensors.contains(&(agent("claude", "5h"), 23.5)));
+        assert!(first.sensors.contains(&(agent("codex", "7d"), 72.0)));
+        assert!(first.sensors.contains(&(agent("claude", "5h"), 76.5)));
         assert!(
             first.sensors.iter().all(|x| x.0 != agent("codex", "input")),
             "no token rate without an interval"

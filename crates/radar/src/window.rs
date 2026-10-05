@@ -138,7 +138,7 @@ pub fn build(app: &adw::Application, db: PathBuf, preset_secs: i64, theme: Theme
             gpu: Card::new("GPU", Format::Percent, YRange::Fixed(100.0)),
             fans: Card::new("Fans", Format::Rpm, YRange::Auto),
             power: Card::new("Battery Power", Format::Watts, YRange::Auto),
-            quota: Card::new("AI Quota", Format::Percent, YRange::Fixed(100.0)),
+            quota: Card::new("AI Quota Remaining", Format::Percent, YRange::Fixed(100.0)),
             tokens: Card::new("AI Tokens", Format::TokensPerMin, YRange::Auto),
         };
         let status = adw::StatusPage::builder()

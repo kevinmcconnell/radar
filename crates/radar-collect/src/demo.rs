@@ -86,7 +86,7 @@ struct AgentDemo {
 }
 
 impl AgentDemo {
-    /// Quota used and tokens per minute over `interval` seconds.
+    /// Quota remaining and tokens per minute over `interval` seconds.
     fn step(&mut self, ts: i64, interval: i64, act: f64, rng: &mut Rng) -> (f64, f64) {
         if ts % (5 * 3600) < interval {
             self.five_hour = 0.0;
@@ -273,9 +273,10 @@ pub fn seed(path: &Path, root: &Path, days: u64, interval: i64) -> Result<(), Bo
         for (n, agent) in agents.iter_mut().enumerate() {
             let (input, output) = agent.step(ts, interval, act, &mut rng);
             let base = 10 + n * 4;
-            sample
-                .sensors
-                .extend([(base, agent.five_hour), (base + 1, agent.seven_day)]);
+            sample.sensors.extend([
+                (base, 100.0 - agent.five_hour),
+                (base + 1, 100.0 - agent.seven_day),
+            ]);
             if !after_gap {
                 sample
                     .sensors

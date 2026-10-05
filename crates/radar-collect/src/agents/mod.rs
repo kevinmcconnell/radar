@@ -184,12 +184,12 @@ impl Agents {
         }
     }
 
-    /// Percent of a window used, or 0 once the window has reset.
+    /// Percent of a window still available, or all of it once the window has reset.
     pub fn quota(&self, agent: Agent, window: usize, now: i64) -> Option<f64> {
         let (_, q) = self.usage(agent).windows.get(window)?;
         Some(match q.resets_at {
-            Some(reset) if reset <= now => 0.0,
-            _ => q.used_percent,
+            Some(reset) if reset <= now => 100.0,
+            _ => (100.0 - q.used_percent).max(0.0),
         })
     }
 
@@ -282,14 +282,14 @@ mod tests {
             codex: Some(fixture("codex")),
         });
         let q = |agent, w| agents.quota(agent, w, 0).unwrap();
-        assert_eq!(q(Agent::Codex, 0), 10.0);
-        assert_eq!(q(Agent::Codex, 1), 28.0);
-        assert_eq!(q(Agent::Claude, 0), 23.5);
-        assert_eq!(q(Agent::Claude, 1), 41.2);
+        assert_eq!(q(Agent::Codex, 0), 90.0);
+        assert_eq!(q(Agent::Codex, 1), 72.0);
+        assert_eq!(q(Agent::Claude, 0), 76.5);
+        assert_eq!(q(Agent::Claude, 1), 58.8);
         assert_eq!(
             agents.quota(Agent::Codex, 0, 1_790_887_470),
-            Some(0.0),
-            "a window reads 0 once it has reset"
+            Some(100.0),
+            "a window is whole again once it has reset"
         );
         assert_eq!(
             agents.tokens(Agent::Codex, Direction::Input, 5000),

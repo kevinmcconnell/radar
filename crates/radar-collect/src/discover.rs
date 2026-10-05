@@ -15,7 +15,7 @@ pub enum Reading {
     },
     BusyFreq,
     FastestFreq,
-    /// Percent used of the `window`th rate-limit window the agent has reported.
+    /// Percent left of the `window`th rate-limit window the agent has reported.
     Quota {
         agent: Agent,
         window: usize,

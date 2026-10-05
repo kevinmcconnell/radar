@@ -44,8 +44,8 @@ The database lives at `~/.local/share/radar/radar.db`. Run
 
 ## AI agents
 
-Radar can chart how much of your Codex and Claude Code rate limits you have
-used, and the tokens each agent is consuming. Neither needs network access or
+Radar can chart how much of your Codex and Claude Code rate limits remains,
+and the tokens each agent is consuming. Neither needs network access or
 credentials. Both cards appear once an agent has reported something.
 
 **Codex** needs no setup. The collector tails the session logs under
