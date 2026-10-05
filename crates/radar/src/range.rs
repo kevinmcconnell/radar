@@ -27,10 +27,27 @@ pub const PRESETS: [(&str, i64); 5] = [
     ("5d", 5 * 86400),
 ];
 
+pub const SUB_HOUR_PRESETS: [(&str, i64); 4] = [
+    ("30m", 30 * 60),
+    ("15m", 15 * 60),
+    ("10m", 10 * 60),
+    ("5m", 5 * 60),
+];
+
 const MINUTES_PER_DAY: i32 = 24 * 60;
+
+pub fn preset_named(name: &str) -> Option<i64> {
+    SUB_HOUR_PRESETS
+        .iter()
+        .chain(PRESETS.iter())
+        .find(|(label, _)| *label == name)
+        .map(|(_, secs)| *secs)
+}
 
 pub struct RangePicker {
     pub root: gtk::Box,
+    sub_hour: gtk::ToggleButton,
+    sub_hour_secs: Rc<Cell<i64>>,
     toggles: Vec<gtk::ToggleButton>,
     custom: gtk::MenuButton,
     updating: Rc<Cell<bool>>,
@@ -190,12 +207,49 @@ impl RangePicker {
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         root.add_css_class("linked");
 
+        let (default_label, default_secs) = SUB_HOUR_PRESETS[SUB_HOUR_PRESETS.len() - 1];
+        let sub_hour_secs = Rc::new(Cell::new(default_secs));
+        let sub_hour = gtk::ToggleButton::with_label(default_label);
+        {
+            let (on_change, updating, sub_hour_secs) =
+                (on_change.clone(), updating.clone(), sub_hour_secs.clone());
+            sub_hour.connect_toggled(move |b| {
+                if b.is_active() && !updating.get() {
+                    on_change(Range::Preset(sub_hour_secs.get()));
+                }
+            });
+        }
+        root.append(&sub_hour);
+
+        let sub_hour_menu = gtk::MenuButton::new();
+        let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let sub_hour_popover = gtk::Popover::builder().child(&choices).build();
+        for (label, secs) in SUB_HOUR_PRESETS {
+            let b = gtk::Button::with_label(label);
+            b.add_css_class("flat");
+            let (on_change, popover) = (on_change.clone(), sub_hour_popover.clone());
+            b.connect_clicked(move |_| {
+                popover.popdown();
+                on_change(Range::Preset(secs));
+            });
+            choices.append(&b);
+        }
+        sub_hour_menu.set_popover(Some(&sub_hour_popover));
+        root.append(&sub_hour_menu);
+        {
+            let sub_hour_menu = sub_hour_menu.clone();
+            sub_hour.connect_toggled(move |b| mark_checked(&sub_hour_menu, b.is_active()));
+        }
+        {
+            let (sub_hour, sub_hour_menu) = (sub_hour.clone(), sub_hour_menu.clone());
+            sub_hour_popover
+                .connect_closed(move |_| mark_checked(&sub_hour_menu, sub_hour.is_active()));
+        }
+
         let mut toggles: Vec<gtk::ToggleButton> = Vec::new();
         for (label, secs) in PRESETS {
             let b = gtk::ToggleButton::with_label(label);
-            if let Some(first) = toggles.first() {
-                b.set_group(Some(first));
-            }
+            b.set_group(Some(&sub_hour));
             let (on_change, updating) = (on_change.clone(), updating.clone());
             b.connect_toggled(move |b| {
                 if b.is_active() && !updating.get() {
@@ -269,6 +323,8 @@ impl RangePicker {
 
         RangePicker {
             root,
+            sub_hour,
+            sub_hour_secs,
             toggles,
             custom,
             updating,
@@ -281,43 +337,72 @@ impl RangePicker {
         self.oldest.set(oldest);
     }
 
-    fn highlight_custom(&self, highlighted: bool) {
-        let Some(inner_button) = self.custom.first_child() else {
-            return;
-        };
-        if highlighted {
-            inner_button.add_css_class("suggested-action");
-        } else {
-            inner_button.remove_css_class("suggested-action");
-        }
-    }
-
     pub fn show(&self, range: Range) {
         self.current.set(range);
         self.updating.set(true);
+        let sub_hour = match range {
+            Range::Preset(secs) => SUB_HOUR_PRESETS.iter().find(|(_, s)| *s == secs),
+            Range::Custom { .. } => None,
+        };
+        if let Some((label, secs)) = sub_hour {
+            self.sub_hour.set_label(label);
+            self.sub_hour_secs.set(*secs);
+        }
+        self.sub_hour.set_active(sub_hour.is_some());
         match range {
             Range::Preset(secs) => {
                 for (b, (_, s)) in self.toggles.iter().zip(PRESETS) {
                     b.set_active(s == secs);
                 }
                 self.custom.set_label("Custom…");
-                self.highlight_custom(false);
+                highlight(&self.custom, false);
             }
             Range::Custom { from, to } => {
                 for b in &self.toggles {
                     b.set_active(false);
                 }
                 self.custom.set_label(&describe(from, to));
-                self.highlight_custom(true);
+                highlight(&self.custom, true);
             }
         }
         self.updating.set(false);
     }
 }
 
+fn mark_checked(menu: &gtk::MenuButton, checked: bool) {
+    let Some(inner_button) = menu.first_child() else {
+        return;
+    };
+    if checked {
+        inner_button.set_state_flags(gtk::StateFlags::CHECKED, false);
+    } else {
+        inner_button.unset_state_flags(gtk::StateFlags::CHECKED);
+    }
+}
+
+fn highlight(menu: &gtk::MenuButton, highlighted: bool) {
+    let Some(inner_button) = menu.first_child() else {
+        return;
+    };
+    if highlighted {
+        inner_button.add_css_class("suggested-action");
+    } else {
+        inner_button.remove_css_class("suggested-action");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presets_are_found_by_name() {
+        assert_eq!(preset_named("5m"), Some(300));
+        assert_eq!(preset_named("30m"), Some(1800));
+        assert_eq!(preset_named("1h"), Some(3600));
+        assert_eq!(preset_named("5d"), Some(5 * 86400));
+        assert_eq!(preset_named("2h"), None);
+    }
 
     #[test]
     fn minutes_format_as_clock_time() {
