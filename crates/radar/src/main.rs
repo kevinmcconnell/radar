@@ -1,3 +1,4 @@
+mod askpass;
 mod axis;
 mod cards;
 mod chart;
@@ -58,6 +59,10 @@ fn exit_usage(message: &str) -> ! {
 }
 
 fn main() -> glib::ExitCode {
+    if let Some(code) = askpass::answer_for_ssh() {
+        return code;
+    }
+
     let (db, machine, range) = parse_args();
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_startup(|_| range::load_style());

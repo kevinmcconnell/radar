@@ -2,13 +2,13 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
-use std::sync::mpsc;
 
 use adw::prelude::*;
 use gtk::glib;
 use omarchy_theme::Theme;
 use radar_core::{Sensor, SensorKind, Stats, SysPoint, query};
 
+use crate::askpass::{self, Kind, Prompt};
 use crate::axis::Format;
 use crate::cards::Card;
 use crate::chart::{Series, Style, YRange};
@@ -17,7 +17,7 @@ use crate::machine::{self, MachinePicker};
 use crate::palette::{CYCLE, ColorRole, Hue};
 use crate::procs::ProcPanel;
 use crate::range::{Range, RangePicker};
-use crate::worker::{self, Request};
+use crate::worker::{self, Request, Worker};
 use radar_core::snapshot::{Query, Snapshot};
 
 const REFRESH_TICK_SECS: u32 = 5;
@@ -94,6 +94,7 @@ struct Viewer {
     window: adw::ApplicationWindow,
     stack: gtk::Stack,
     status: adw::StatusPage,
+    try_again: gtk::Button,
     picker: RangePicker,
     machine_picker: Rc<MachinePicker>,
     charts_column: gtk::Box,
@@ -104,9 +105,15 @@ struct Viewer {
     range: Cell<Range>,
     machine: RefCell<Option<String>>,
     remembered: Cell<bool>,
+    /// Whether refreshing waits for Try Again, after another machine
+    /// failed. Reconnecting on every tick could ask for a password again
+    /// and again.
+    stalled: Cell<bool>,
+    prompt: RefCell<Option<adw::AlertDialog>>,
+    _askpass: askpass::Listener,
     generation: Cell<u64>,
     secs_since_request: Cell<u32>,
-    requests: mpsc::Sender<Request>,
+    worker: Worker,
     last: RefCell<Option<Snapshot>>,
     config: RefCell<Config>,
     theme: Theme,
@@ -120,7 +127,8 @@ pub fn build(
     preset_secs: i64,
     theme: Theme,
 ) {
-    let (requests, replies) = worker::spawn(db.clone());
+    let (askpass, prompts) = askpass::listen();
+    let (worker, replies) = worker::spawn(db.clone(), askpass.path().to_path_buf());
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
@@ -157,14 +165,26 @@ pub fn build(
             quota: Card::new("AI Quota Remaining", Format::Percent, YRange::Fixed(100.0)),
             tokens: Card::new("AI Tokens", Format::TokensPerMin, YRange::Auto),
         };
+        let try_again = gtk::Button::builder()
+            .label("Try Again")
+            .halign(gtk::Align::Center)
+            .css_classes(["pill", "suggested-action"])
+            .build();
+        let weak = this.clone();
+        try_again.connect_clicked(move |_| {
+            if let Some(v) = weak.upgrade() {
+                v.request();
+            }
+        });
         let status = adw::StatusPage::builder()
             .icon_name("dev.radar.Radar")
-            .title("No Data Yet")
+            .child(&try_again)
             .build();
         Viewer {
             window: window.clone(),
             stack: gtk::Stack::new(),
             status,
+            try_again,
             picker,
             machine_picker,
             charts_column: gtk::Box::new(gtk::Orientation::Vertical, 12),
@@ -175,9 +195,12 @@ pub fn build(
             range: Cell::new(Range::Preset(preset_secs)),
             machine: RefCell::new(None),
             remembered: Cell::new(false),
+            stalled: Cell::new(false),
+            prompt: RefCell::new(None),
+            _askpass: askpass,
             generation: Cell::new(0),
             secs_since_request: Cell::new(0),
-            requests,
+            worker,
             last: RefCell::new(None),
             config: RefCell::new(Config::load()),
             theme,
@@ -205,11 +228,21 @@ pub fn build(
     });
 
     let weak = Rc::downgrade(&viewer);
+    glib::spawn_future_local(async move {
+        while let Ok(prompt) = prompts.recv().await {
+            let Some(v) = weak.upgrade() else { break };
+            v.ask(prompt).await;
+        }
+    });
+
+    let weak = Rc::downgrade(&viewer);
     glib::timeout_add_seconds_local(REFRESH_TICK_SECS, move || {
         let Some(v) = weak.upgrade() else {
             return glib::ControlFlow::Break;
         };
-        if let Range::Preset(range_secs) = v.range.get() {
+        if let Range::Preset(range_secs) = v.range.get()
+            && !v.stalled.get()
+        {
             let waited = v.secs_since_request.get() + REFRESH_TICK_SECS;
             if waited >= refresh_secs(range_secs) {
                 v.request();
@@ -382,6 +415,12 @@ impl Viewer {
             None => "Radar".to_string(),
         };
         self.window.set_title(Some(&title));
+        if *self.machine.borrow() != machine {
+            self.worker.hang_up();
+        }
+        if let Some(dialog) = self.prompt.take() {
+            dialog.force_close();
+        }
         self.machine_picker.show(machine.as_deref());
         *self.machine.borrow_mut() = machine;
         self.remembered.set(false);
@@ -395,8 +434,9 @@ impl Viewer {
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
         self.secs_since_request.set(0);
+        self.stalled.set(false);
         let bucket = query::nice_bucket(to - from, width);
-        let _ = self.requests.send(Request {
+        self.worker.send(Request {
             generation,
             machine: self.machine.borrow().clone(),
             query: Query {
@@ -420,9 +460,55 @@ impl Viewer {
                 self.render(&snap);
                 *self.last.borrow_mut() = Some(snap);
             }
-            Err(message) => {
-                self.status.set_description(Some(&message));
+            Err(problem) => {
+                let remote = self.machine.borrow().is_some();
+                self.stalled.set(remote);
+                self.try_again.set_visible(remote);
+                self.status.set_title(&problem.title);
+                self.status.set_description(Some(&problem.details));
                 self.stack.set_visible_child_name("status");
+            }
+        }
+    }
+
+    /// Ask what ssh wants to know, a password or whether to trust a host
+    /// key, and cancel the connection when the dialog is dismissed. A notice,
+    /// like touching a security key, stays up until ssh is done with it.
+    async fn ask(&self, prompt: Prompt) {
+        let machine = self.machine.borrow().clone().unwrap_or_default();
+        let dialog = adw::AlertDialog::new(Some(&machine), Some(&prompt.text));
+        *self.prompt.borrow_mut() = Some(dialog.clone());
+        if prompt.kind == Kind::Notice {
+            dialog.set_can_close(false);
+            dialog.present(Some(&self.window));
+            prompt.gone().await;
+            dialog.force_close();
+        } else {
+            self.ask_for_answer(&dialog, prompt).await;
+        }
+        self.prompt.take();
+    }
+
+    async fn ask_for_answer(&self, dialog: &adw::AlertDialog, prompt: Prompt) {
+        dialog.add_responses(&[("cancel", "Cancel"), ("continue", "Continue")]);
+        dialog.set_response_appearance("continue", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("continue"));
+        dialog.set_close_response("cancel");
+        let secret = gtk::PasswordEntry::builder()
+            .activates_default(true)
+            .show_peek_icon(true)
+            .build();
+        if prompt.kind == Kind::Secret {
+            dialog.set_extra_child(Some(&secret));
+            dialog.set_focus(Some(&secret));
+        }
+
+        let response = dialog.clone().choose_future(Some(&self.window)).await;
+        if response == "continue" {
+            if prompt.kind == Kind::Secret {
+                prompt.answer(secret.text().to_string());
+            } else {
+                prompt.answer("yes".to_string());
             }
         }
     }

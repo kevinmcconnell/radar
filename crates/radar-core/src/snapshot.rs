@@ -39,9 +39,28 @@ pub struct Snapshot {
     pub oldest: Option<i64>,
 }
 
-/// A snapshot, or a message for the viewer to show instead. The message is
-/// Pango markup.
-pub type Reply = Result<Snapshot, String>;
+/// A snapshot, or the problem for the viewer to show instead.
+pub type Reply = Result<Snapshot, Problem>;
+
+/// Why there is nothing to show: a short title, and details in Pango markup.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Problem {
+    pub title: String,
+    pub details: String,
+}
+
+impl Problem {
+    pub fn new(title: impl Into<String>, details: impl Into<String>) -> Self {
+        Problem {
+            title: title.into(),
+            details: details.into(),
+        }
+    }
+
+    fn unreadable(e: impl std::fmt::Display) -> Self {
+        Problem::new("Cannot Read Data", format!("{e}\n\n{START_HINT}"))
+    }
+}
 
 /// Reads snapshots from the database at `path`, opening it on first use and
 /// again after any error, so a collector started later is picked up.
@@ -68,26 +87,29 @@ impl Reader {
             self.conn = Some(self.open()?);
         }
         let conn = self.conn.as_ref().unwrap();
-        read_snapshot(conn, q).map_err(|e| format!("{e}\n\n{START_HINT}"))
+        read_snapshot(conn, q).map_err(Problem::unreadable)
     }
 
-    fn open(&self) -> Result<Connection, String> {
+    fn open(&self) -> Result<Connection, Problem> {
         if !self.path.exists() {
-            return Err(format!(
-                "No database at {}\n\n{START_HINT}",
-                self.path.display()
+            return Err(Problem::new(
+                "No Data Yet",
+                format!("No database at {}\n\n{START_HINT}", self.path.display()),
             ));
         }
-        let conn = db::open_ro(&self.path).map_err(|e| format!("{e}\n\n{START_HINT}"))?;
+        let conn = db::open_ro(&self.path).map_err(Problem::unreadable)?;
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .map_err(|e| format!("{e}\n\n{START_HINT}"))?;
+            .map_err(Problem::unreadable)?;
         if version == schema::VERSION {
             Ok(conn)
         } else {
-            Err(format!(
-                "The database has schema version {version}, but this viewer needs version {}.\n\n{RESTART_HINT}",
-                schema::VERSION
+            Err(Problem::new(
+                "Collector Needs a Restart",
+                format!(
+                    "The database has schema version {version}, but this viewer needs version {}.\n\n{RESTART_HINT}",
+                    schema::VERSION
+                ),
             ))
         }
     }
@@ -120,8 +142,11 @@ pub fn serve(
     for line in input.lines() {
         let reply = match serde_json::from_str::<Query>(&line?) {
             Ok(q) => reader.snapshot(&q),
-            Err(e) => Err(format!(
-                "The remote collector cannot read the query: {e}\n\nInstall the same version of Radar on both machines."
+            Err(e) => Err(Problem::new(
+                "Versions Don't Match",
+                format!(
+                    "The remote collector cannot read the query: {e}\n\nInstall the same version of Radar on both machines."
+                ),
             )),
         };
         serde_json::to_writer(&mut output, &reply)?;
@@ -190,10 +215,11 @@ mod tests {
             .collect();
         assert_eq!(replies.len(), 3);
         assert_eq!(replies[0], Ok(expected.clone()));
+        let problem = replies[1].as_ref().unwrap_err();
+        assert_eq!(problem.title, "Versions Don't Match");
         assert!(
-            replies[1]
-                .as_ref()
-                .unwrap_err()
+            problem
+                .details
                 .starts_with("The remote collector cannot read the query")
         );
         assert_eq!(replies[2], Ok(expected));
@@ -206,12 +232,9 @@ mod tests {
             std::env::temp_dir().join(format!("radar-snapshot-missing-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let mut reader = Reader::new(path.clone());
-        assert!(
-            reader
-                .snapshot(&QUERY)
-                .unwrap_err()
-                .starts_with("No database at")
-        );
+        let problem = reader.snapshot(&QUERY).unwrap_err();
+        assert_eq!(problem.title, "No Data Yet");
+        assert!(problem.details.starts_with("No database at"));
 
         db::open_rw(&path).unwrap();
         assert_eq!(reader.snapshot(&QUERY).unwrap().oldest, None);
