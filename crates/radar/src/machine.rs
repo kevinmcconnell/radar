@@ -93,11 +93,19 @@ fn touch(mut machines: Vec<Recent>, machine: &str, hostname: &str) -> Vec<Recent
     machines
 }
 
+/// The full picker is an entry with the recent machines dropping down below
+/// it. Narrow windows get the compact one instead: a button showing whether
+/// the machine is this one or a remote, with the entry and the recent
+/// machines in its popover.
 pub struct MachinePicker {
-    pub root: gtk::Box,
+    pub root: gtk::Stack,
+    full: gtk::Box,
     entry: gtk::Entry,
     popover: gtk::Popover,
     list: gtk::ListBox,
+    compact: gtk::MenuButton,
+    compact_entry: gtk::Entry,
+    compact_list: gtk::ListBox,
     choices: RefCell<Vec<Option<String>>>,
     current: RefCell<Option<String>>,
     on_change: Box<dyn Fn(Option<String>)>,
@@ -105,43 +113,59 @@ pub struct MachinePicker {
 
 impl MachinePicker {
     pub fn new(on_change: impl Fn(Option<String>) + 'static) -> Rc<Self> {
-        let entry = gtk::Entry::builder()
-            .placeholder_text(THIS_COMPUTER)
-            .primary_icon_name(LOCAL_ICON)
-            .tooltip_text("The machine to show, as an ssh destination like user@host")
-            .width_chars(12)
-            .max_width_chars(24)
-            .build();
-        let show = gtk::Button::builder()
-            .icon_name("go-next-symbolic")
-            .tooltip_text("Show Machine")
-            .build();
-        let root = gtk::Box::builder().css_classes(["linked"]).build();
-        root.append(&entry);
-        root.append(&show);
+        let entry = machine_entry().width_chars(12).build();
+        let show = show_button();
+        let full = gtk::Box::builder().css_classes(["linked"]).build();
+        full.append(&entry);
+        full.append(&show);
 
-        let list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .css_classes(["boxed-list"])
-            .build();
+        let list = machine_list();
         let popover = gtk::Popover::builder()
             .child(&list)
             .autohide(false)
             .has_arrow(false)
             .position(gtk::PositionType::Bottom)
             .build();
-        popover.set_parent(&entry);
+        // A popover counts as its parent's child for focus, so parented to
+        // the entry, a focused row would leave the entry thinking it still
+        // has focus after the drop-down hides, and the next click would not
+        // bring the drop-down back.
+        popover.set_parent(&full);
+
+        let compact_entry = machine_entry().width_chars(24).build();
+        let compact_show = show_button();
+        let compact_bar = gtk::Box::builder().css_classes(["linked"]).build();
+        compact_bar.append(&compact_entry);
+        compact_bar.append(&compact_show);
+        let compact_list = machine_list();
+        let compact_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        compact_box.append(&compact_bar);
+        compact_box.append(&compact_list);
+        let compact = gtk::MenuButton::builder()
+            .icon_name(LOCAL_ICON)
+            .tooltip_text(THIS_COMPUTER)
+            .popover(&gtk::Popover::builder().child(&compact_box).build())
+            .build();
+
+        let root = gtk::Stack::builder().hhomogeneous(false).build();
+        root.add_child(&full);
+        root.add_child(&compact);
 
         let picker = Rc::new(MachinePicker {
             root,
+            full,
             entry,
             popover,
             list,
+            compact,
+            compact_entry,
+            compact_list,
             choices: RefCell::new(Vec::new()),
             current: RefCell::new(None),
             on_change: Box::new(on_change),
         });
         picker.connect(&show);
+        picker.connect_compact(&compact_show);
         picker
     }
 
@@ -154,22 +178,28 @@ impl MachinePicker {
             LOCAL_ICON
         };
         self.entry.set_primary_icon_name(Some(icon));
+        self.compact.set_icon_name(icon);
+        self.compact
+            .set_tooltip_text(Some(machine.unwrap_or(THIS_COMPUTER)));
+    }
+
+    pub fn set_compact(&self, compact: bool) {
+        self.close();
+        if compact {
+            self.root.set_visible_child(&self.compact);
+        } else {
+            self.root.set_visible_child(&self.full);
+        }
     }
 
     fn connect(self: &Rc<Self>, show: &gtk::Button) {
         let weak = Rc::downgrade(self);
         self.entry
-            .connect_activate(move |_| with(&weak, |p| p.choose_typed()));
+            .connect_activate(move |e| with(&weak, |p| p.choose_typed(e)));
         let weak = Rc::downgrade(self);
-        show.connect_clicked(move |_| with(&weak, |p| p.choose_typed()));
-
-        let weak = Rc::downgrade(self);
-        self.list.connect_row_activated(move |_, row| {
-            with(&weak, |p| {
-                let choice = p.choices.borrow()[row.index() as usize].clone();
-                p.choose(choice);
-            })
-        });
+        let entry = self.entry.clone();
+        show.connect_clicked(move |_| with(&weak, |p| p.choose_typed(&entry)));
+        self.connect_list(&self.list);
 
         let focus = gtk::EventControllerFocus::new();
         let weak = Rc::downgrade(self);
@@ -216,63 +246,114 @@ impl MachinePicker {
         self.list.add_controller(list_keys);
     }
 
-    fn choose_typed(&self) {
-        let text = self.entry.text();
+    fn connect_compact(self: &Rc<Self>, show: &gtk::Button) {
+        let weak = Rc::downgrade(self);
+        self.compact_entry
+            .connect_activate(move |e| with(&weak, |p| p.choose_typed(e)));
+        let weak = Rc::downgrade(self);
+        let entry = self.compact_entry.clone();
+        show.connect_clicked(move |_| with(&weak, |p| p.choose_typed(&entry)));
+        self.connect_list(&self.compact_list);
+
+        if let Some(popover) = self.compact.popover() {
+            let weak = Rc::downgrade(self);
+            popover.connect_show(move |_| {
+                with(&weak, |p| {
+                    let current = p.current.borrow().clone();
+                    p.compact_entry
+                        .set_text(current.as_deref().unwrap_or_default());
+                    let any = p.fill_list(&p.compact_list);
+                    p.compact_list.set_visible(any);
+                })
+            });
+        }
+    }
+
+    fn connect_list(self: &Rc<Self>, list: &gtk::ListBox) {
+        let weak = Rc::downgrade(self);
+        list.connect_row_activated(move |_, row| {
+            with(&weak, |p| {
+                let choice = p.choices.borrow()[row.index() as usize].clone();
+                p.choose(choice);
+            })
+        });
+    }
+
+    fn choose_typed(&self, entry: &gtk::Entry) {
+        let text = entry.text();
         let machine = Some(text.trim()).filter(|m| !m.is_empty());
         self.choose(machine.map(String::from));
     }
 
     fn choose(&self, machine: Option<String>) {
-        self.popover.popdown();
-        self.release_focus();
+        self.close();
         (self.on_change)(machine);
     }
 
     fn cancel(&self) {
         let current = self.current.borrow().clone();
         self.entry.set_text(current.as_deref().unwrap_or_default());
-        self.popover.popdown();
-        self.release_focus();
+        self.close();
     }
 
-    fn release_focus(&self) {
+    /// Hiding the drop-down while one of its rows has focus would hand focus
+    /// back to the entry, so focus is dropped first.
+    fn close(&self) {
         if let Some(root) = self.entry.root() {
             root.set_focus(None::<&gtk::Widget>);
         }
+        self.popover.popdown();
+        self.compact.popdown();
     }
 
     /// Popping up under a window the compositor has not shown yet stalls GDK,
     /// so this waits for the window to be active.
     fn show_recent(&self) {
-        let machines = recent();
         let active = self
             .entry
             .root()
             .and_downcast::<gtk::Window>()
             .is_some_and(|w| w.is_active());
-        if machines.is_empty() || !active {
+        if active && self.fill_list(&self.list) {
+            self.popover.set_size_request(self.full.width(), -1);
+            self.popover.popup();
+        } else {
             self.popover.popdown();
-            return;
+        }
+    }
+
+    /// Fill `list` with this computer and the recent machines, unless there
+    /// are no recent machines to offer.
+    fn fill_list(&self, list: &gtk::ListBox) -> bool {
+        let machines = recent();
+        if machines.is_empty() {
+            return false;
         }
 
-        self.list.remove_all();
-        self.add_row(None, &glib::host_name(), THIS_COMPUTER, LOCAL_ICON);
+        list.remove_all();
+        self.add_row(list, None, &glib::host_name(), THIS_COMPUTER, LOCAL_ICON);
         for m in &machines {
             let subtitle = if m.title() == m.machine {
                 ""
             } else {
                 &m.machine
             };
-            self.add_row(Some(&m.machine), m.title(), subtitle, REMOTE_ICON);
+            self.add_row(list, Some(&m.machine), m.title(), subtitle, REMOTE_ICON);
         }
         *self.choices.borrow_mut() = std::iter::once(None)
             .chain(machines.into_iter().map(|m| Some(m.machine)))
             .collect();
-        self.popover.set_size_request(self.root.width(), -1);
-        self.popover.popup();
+        true
     }
 
-    fn add_row(&self, machine: Option<&str>, title: &str, subtitle: &str, icon: &str) {
+    fn add_row(
+        &self,
+        list: &gtk::ListBox,
+        machine: Option<&str>,
+        title: &str,
+        subtitle: &str,
+        icon: &str,
+    ) {
         let row = adw::ActionRow::builder()
             .title(title)
             .subtitle(subtitle)
@@ -283,8 +364,30 @@ impl MachinePicker {
         if machine == self.current.borrow().as_deref() {
             row.add_suffix(&gtk::Image::from_icon_name("object-select-symbolic"));
         }
-        self.list.append(&row);
+        list.append(&row);
     }
+}
+
+fn machine_entry() -> gtk::builders::EntryBuilder {
+    gtk::Entry::builder()
+        .placeholder_text(THIS_COMPUTER)
+        .primary_icon_name(LOCAL_ICON)
+        .tooltip_text("The machine to show, as an ssh destination like user@host")
+        .max_width_chars(24)
+}
+
+fn show_button() -> gtk::Button {
+    gtk::Button::builder()
+        .icon_name("go-next-symbolic")
+        .tooltip_text("Show Machine")
+        .build()
+}
+
+fn machine_list() -> gtk::ListBox {
+    gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .build()
 }
 
 fn with(picker: &Weak<MachinePicker>, f: impl FnOnce(&MachinePicker)) {

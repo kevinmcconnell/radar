@@ -25,7 +25,6 @@ const MAX_REFRESH_SECS: i64 = 60;
 const REFRESHES_PER_RANGE: i64 = 720;
 const TOP_N: i64 = 10;
 const DEFAULT_WIDTH_PX: i32 = 800;
-
 struct Cards {
     cpu: Card,
     freq: Card,
@@ -304,11 +303,12 @@ impl Viewer {
         let breakpoint =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 960sp").unwrap());
         {
-            let (procs, column, side, side_box) = (
+            let (procs, column, side, side_box, picker) = (
                 self.procs.root.clone(),
                 self.charts_column.clone(),
                 side.clone(),
                 side_box.clone(),
+                self.machine_picker.clone(),
             );
             breakpoint.connect_apply(move |_| {
                 side.set_child(None::<&gtk::Widget>);
@@ -316,14 +316,16 @@ impl Viewer {
                 procs.set_margin_end(0);
                 column.append(&procs);
                 side_box.set_visible(false);
+                picker.set_compact(true);
             });
         }
         {
-            let (procs, column, side, side_box) = (
+            let (procs, column, side, side_box, picker) = (
                 self.procs.root.clone(),
                 self.charts_column.clone(),
                 side.clone(),
                 side_box.clone(),
+                self.machine_picker.clone(),
             );
             breakpoint.connect_unapply(move |_| {
                 column.remove(&procs);
@@ -331,6 +333,7 @@ impl Viewer {
                 procs.set_margin_end(12);
                 side.set_child(Some(&procs));
                 side_box.set_visible(true);
+                picker.set_compact(false);
             });
         }
         self.window.add_breakpoint(breakpoint);
