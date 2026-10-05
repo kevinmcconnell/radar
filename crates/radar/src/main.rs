@@ -54,6 +54,7 @@ fn exit_usage(message: &str) -> ! {
 fn main() -> glib::ExitCode {
     let (db, range) = parse_args();
     let app = adw::Application::builder().application_id(APP_ID).build();
+    app.connect_startup(|_| range::load_style());
     app.connect_activate(move |app| {
         if let Some(window) = app.active_window() {
             window.present();

@@ -36,6 +36,26 @@ pub const SUB_HOUR_PRESETS: [(&str, i64); 4] = [
 
 const MINUTES_PER_DAY: i32 = 24 * 60;
 
+const CSS: &str = "
+.linked > menubutton.sub-hour-menu > button {
+    margin-left: 0;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+";
+
+pub fn load_style() {
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(CSS);
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+}
+
 pub fn preset_named(name: &str) -> Option<i64> {
     SUB_HOUR_PRESETS
         .iter()
@@ -47,6 +67,7 @@ pub fn preset_named(name: &str) -> Option<i64> {
 pub struct RangePicker {
     pub root: gtk::Box,
     sub_hour: gtk::ToggleButton,
+    sub_hour_labels: gtk::Stack,
     sub_hour_secs: Rc<Cell<i64>>,
     toggles: Vec<gtk::ToggleButton>,
     custom: gtk::MenuButton,
@@ -206,10 +227,19 @@ impl RangePicker {
         let oldest = Rc::new(Cell::new(None));
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         root.add_css_class("linked");
+        let widths = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
 
         let (default_label, default_secs) = SUB_HOUR_PRESETS[SUB_HOUR_PRESETS.len() - 1];
         let sub_hour_secs = Rc::new(Cell::new(default_secs));
-        let sub_hour = gtk::ToggleButton::with_label(default_label);
+        let sub_hour_labels = gtk::Stack::new();
+        for (label, _) in SUB_HOUR_PRESETS {
+            sub_hour_labels.add_named(&gtk::Label::new(Some(label)), Some(label));
+        }
+        sub_hour_labels.set_visible_child_name(default_label);
+        let sub_hour = gtk::ToggleButton::builder()
+            .child(&sub_hour_labels)
+            .hexpand(true)
+            .build();
         {
             let (on_change, updating, sub_hour_secs) =
                 (on_change.clone(), updating.clone(), sub_hour_secs.clone());
@@ -219,9 +249,15 @@ impl RangePicker {
                 }
             });
         }
-        root.append(&sub_hour);
+        let sub_hour_group = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        sub_hour_group.add_css_class("linked");
+        sub_hour_group.set_hexpand(false);
+        sub_hour_group.append(&sub_hour);
+        widths.add_widget(&sub_hour_group);
+        root.append(&sub_hour_group);
 
         let sub_hour_menu = gtk::MenuButton::new();
+        sub_hour_menu.add_css_class("sub-hour-menu");
         let choices = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let sub_hour_popover = gtk::Popover::builder().child(&choices).build();
         for (label, secs) in SUB_HOUR_PRESETS {
@@ -235,7 +271,7 @@ impl RangePicker {
             choices.append(&b);
         }
         sub_hour_menu.set_popover(Some(&sub_hour_popover));
-        root.append(&sub_hour_menu);
+        sub_hour_group.append(&sub_hour_menu);
         {
             let sub_hour_menu = sub_hour_menu.clone();
             sub_hour.connect_toggled(move |b| mark_checked(&sub_hour_menu, b.is_active()));
@@ -256,6 +292,7 @@ impl RangePicker {
                     on_change(Range::Preset(secs));
                 }
             });
+            widths.add_widget(&b);
             root.append(&b);
             toggles.push(b);
         }
@@ -324,6 +361,7 @@ impl RangePicker {
         RangePicker {
             root,
             sub_hour,
+            sub_hour_labels,
             sub_hour_secs,
             toggles,
             custom,
@@ -345,7 +383,7 @@ impl RangePicker {
             Range::Custom { .. } => None,
         };
         if let Some((label, secs)) = sub_hour {
-            self.sub_hour.set_label(label);
+            self.sub_hour_labels.set_visible_child_name(label);
             self.sub_hour_secs.set(*secs);
         }
         self.sub_hour.set_active(sub_hour.is_some());
