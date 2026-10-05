@@ -12,6 +12,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use radar_core::db;
+use radar_core::snapshot::{self, Reader};
 
 use crate::agents::{AgentDirs, Agents};
 use crate::cli::{Args, Mode};
@@ -38,6 +39,7 @@ fn main() {
             Ok(())
         }
         Mode::SeedDemo(days) => demo::seed(&args.db, &args.root, days, args.interval as i64),
+        Mode::Serve => serve(&args),
     };
     if let Err(e) = result {
         eprintln!("radar-collect: {e}");
@@ -113,6 +115,16 @@ fn run(args: &Args) -> Result<(), Box<dyn Error>> {
             next_trim = ts + TRIM_SECS;
         }
     }
+    Ok(())
+}
+
+fn serve(args: &Args) -> Result<(), Box<dyn Error>> {
+    let mut reader = Reader::new(args.db.clone());
+    snapshot::serve(
+        &mut reader,
+        std::io::stdin().lock(),
+        std::io::stdout().lock(),
+    )?;
     Ok(())
 }
 

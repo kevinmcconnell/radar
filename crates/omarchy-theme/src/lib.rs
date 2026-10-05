@@ -25,6 +25,12 @@ fn omarchy_current_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state/omarchy/current"))
 }
 
+/// Whether this machine runs Omarchy, whose window manager closes windows
+/// itself, so apps can leave out their own close button.
+pub fn is_installed() -> bool {
+    omarchy_current_dir().is_some_and(|p| p.is_dir())
+}
+
 type Handler = Rc<dyn Fn(Option<&Palette>)>;
 
 /// A handle on the followed theme. Keep it alive for as long as the app

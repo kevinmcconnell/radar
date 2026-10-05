@@ -9,14 +9,18 @@ pub struct Config {
     sensors: HashMap<String, bool>,
 }
 
-fn path() -> PathBuf {
+pub fn dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
         });
-    base.join("radar/viewer.conf")
+    base.join("radar")
+}
+
+fn path() -> PathBuf {
+    dir().join("viewer.conf")
 }
 
 pub fn default_visible(s: &Sensor) -> bool {

@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct SysPoint {
     pub t: i64,
     pub cpu_busy: Option<f64>,
@@ -15,13 +17,13 @@ pub struct SysPoint {
     pub gap: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Stats {
     pub avg: f64,
     pub max: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct SysStats {
     pub cpu_busy: Option<Stats>,
     pub mem_used: Option<Stats>,
@@ -29,7 +31,7 @@ pub struct SysStats {
     pub disk_read: Option<Stats>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SensorKind {
     Temp,
     Fan,
@@ -79,7 +81,7 @@ impl SensorKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sensor {
     pub id: i64,
     pub kind: SensorKind,
@@ -94,20 +96,20 @@ impl Sensor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SensorPoint {
     pub t: i64,
     pub sensor_id: i64,
     pub value: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProcUsage {
     pub name: String,
     pub ticks: i64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Meta {
     pub clk_tck: i64,
     pub ncpus: i64,
