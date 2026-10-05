@@ -2,6 +2,7 @@ mod axis;
 mod cards;
 mod chart;
 mod config;
+mod machine;
 mod palette;
 mod procs;
 mod range;
@@ -17,11 +18,13 @@ use crate::range::{PRESETS, preset_named};
 
 const APP_ID: &str = "dev.radar.Radar";
 
-const USAGE: &str = "Usage: radar [--db <path>] [--range 5m|10m|15m|30m|1h|6h|24h|3d|5d]";
+const USAGE: &str =
+    "Usage: radar [--db <path>] [--range 5m|10m|15m|30m|1h|6h|24h|3d|5d] [user@host]";
 
-fn parse_args() -> (PathBuf, i64) {
+fn parse_args() -> (PathBuf, Option<String>, i64) {
     let mut db = radar_core::db::default_db_path();
     let mut range = PRESETS[0].1;
+    let mut machine = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -40,10 +43,13 @@ fn parse_args() -> (PathBuf, i64) {
                 println!("{USAGE}");
                 std::process::exit(0);
             }
-            other => exit_usage(&format!("unexpected argument {other}")),
+            other if other.starts_with('-') || machine.is_some() => {
+                exit_usage(&format!("unexpected argument {other}"))
+            }
+            other => machine = Some(other.to_string()),
         }
     }
-    (db, range)
+    (db, machine, range)
 }
 
 fn exit_usage(message: &str) -> ! {
@@ -52,7 +58,7 @@ fn exit_usage(message: &str) -> ! {
 }
 
 fn main() -> glib::ExitCode {
-    let (db, range) = parse_args();
+    let (db, machine, range) = parse_args();
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_startup(|_| range::load_style());
     app.connect_activate(move |app| {
@@ -60,7 +66,13 @@ fn main() -> glib::ExitCode {
             window.present();
             return;
         }
-        window::build(app, db.clone(), range, omarchy_theme::follow());
+        window::build(
+            app,
+            db.clone(),
+            machine.clone(),
+            range,
+            omarchy_theme::follow(),
+        );
     });
     app.run_with_args::<&str>(&[])
 }

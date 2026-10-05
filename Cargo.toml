@@ -11,6 +11,8 @@ license = "MIT"
 radar-core = { path = "crates/radar-core" }
 omarchy-theme = { path = "crates/omarchy-theme" }
 rusqlite = "0.40"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

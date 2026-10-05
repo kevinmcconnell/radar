@@ -13,10 +13,12 @@ use crate::axis::Format;
 use crate::cards::Card;
 use crate::chart::{Series, Style, YRange};
 use crate::config::Config;
+use crate::machine::{self, MachinePicker};
 use crate::palette::{CYCLE, ColorRole, Hue};
 use crate::procs::ProcPanel;
 use crate::range::{Range, RangePicker};
-use crate::worker::{self, Request, Snapshot};
+use crate::worker::{self, Request};
+use radar_core::snapshot::{Query, Snapshot};
 
 const REFRESH_TICK_SECS: u32 = 5;
 const MAX_REFRESH_SECS: i64 = 60;
@@ -94,12 +96,15 @@ struct Viewer {
     stack: gtk::Stack,
     status: adw::StatusPage,
     picker: RangePicker,
+    machine_picker: Rc<MachinePicker>,
     charts_column: gtk::Box,
     cards: Cards,
     temp_menu: SensorMenu,
     fan_menu: SensorMenu,
     procs: ProcPanel,
     range: Cell<Range>,
+    machine: RefCell<Option<String>>,
+    remembered: Cell<bool>,
     generation: Cell<u64>,
     secs_since_request: Cell<u32>,
     requests: mpsc::Sender<Request>,
@@ -109,7 +114,13 @@ struct Viewer {
     this: Weak<Viewer>,
 }
 
-pub fn build(app: &adw::Application, db: PathBuf, preset_secs: i64, theme: Theme) {
+pub fn build(
+    app: &adw::Application,
+    db: PathBuf,
+    machine: Option<String>,
+    preset_secs: i64,
+    theme: Theme,
+) {
     let (requests, replies) = worker::spawn(db.clone());
 
     let window = adw::ApplicationWindow::builder()
@@ -126,6 +137,12 @@ pub fn build(app: &adw::Application, db: PathBuf, preset_secs: i64, theme: Theme
         let picker = RangePicker::new(move |range| {
             if let Some(v) = weak.upgrade() {
                 v.set_range(range);
+            }
+        });
+        let weak = this.clone();
+        let machine_picker = MachinePicker::new(move |machine| {
+            if let Some(v) = weak.upgrade() {
+                v.set_machine(machine);
             }
         });
         let cards = Cards {
@@ -150,12 +167,15 @@ pub fn build(app: &adw::Application, db: PathBuf, preset_secs: i64, theme: Theme
             stack: gtk::Stack::new(),
             status,
             picker,
+            machine_picker,
             charts_column: gtk::Box::new(gtk::Orientation::Vertical, 12),
             cards,
             temp_menu: SensorMenu::new(SensorKind::Temp),
             fan_menu: SensorMenu::new(SensorKind::Fan),
             procs: ProcPanel::new(),
             range: Cell::new(Range::Preset(preset_secs)),
+            machine: RefCell::new(None),
+            remembered: Cell::new(false),
             generation: Cell::new(0),
             secs_since_request: Cell::new(0),
             requests,
@@ -201,7 +221,9 @@ pub fn build(app: &adw::Application, db: PathBuf, preset_secs: i64, theme: Theme
         glib::ControlFlow::Continue
     });
 
-    viewer.set_range(Range::Preset(preset_secs));
+    viewer.range.set(Range::Preset(preset_secs));
+    viewer.picker.show(viewer.range.get());
+    viewer.set_machine(machine);
     window.present();
 
     let owner = RefCell::new(Some(viewer));
@@ -220,6 +242,7 @@ impl Viewer {
     fn layout(self: &Rc<Self>) {
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(&self.picker.root));
+        header.pack_start(&self.machine_picker.root);
 
         for card in self.cards.all() {
             self.charts_column.append(&card.root);
@@ -348,6 +371,18 @@ impl Viewer {
         self.request();
     }
 
+    fn set_machine(&self, machine: Option<String>) {
+        let title = match &machine {
+            Some(m) => format!("{m} — Radar"),
+            None => "Radar".to_string(),
+        };
+        self.window.set_title(Some(&title));
+        self.machine_picker.show(machine.as_deref());
+        *self.machine.borrow_mut() = machine;
+        self.remembered.set(false);
+        self.request();
+    }
+
     fn request(&self) {
         let (from, to) = self.range.get().bounds(now());
         let width = self.cards.cpu.chart.widget().width();
@@ -358,26 +393,41 @@ impl Viewer {
         let bucket = query::nice_bucket(to - from, width);
         let _ = self.requests.send(Request {
             generation,
-            from,
-            to,
-            bucket,
-            top_n: TOP_N,
+            machine: self.machine.borrow().clone(),
+            query: Query {
+                from,
+                to,
+                bucket,
+                top_n: TOP_N,
+            },
         });
     }
 
     fn receive(&self, reply: worker::Reply) {
-        match reply {
-            Ok(snap) if snap.generation == self.generation.get() => {
+        if reply.generation != self.generation.get() {
+            return;
+        }
+        match reply.snapshot {
+            Ok(snap) => {
+                self.remember_machine(&snap.meta.hostname);
                 self.stack.set_visible_child_name("data");
                 self.picker.set_oldest(snap.oldest);
                 self.render(&snap);
                 *self.last.borrow_mut() = Some(snap);
             }
-            Err((generation, message)) if generation == self.generation.get() => {
+            Err(message) => {
                 self.status.set_description(Some(&message));
                 self.stack.set_visible_child_name("status");
             }
-            _ => {}
+        }
+    }
+
+    /// Put the machine at the top of the recent list once it has answered.
+    fn remember_machine(&self, hostname: &str) {
+        if let Some(machine) = self.machine.borrow().as_deref()
+            && !self.remembered.replace(true)
+        {
+            machine::remember(machine, hostname);
         }
     }
 
