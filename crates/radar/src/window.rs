@@ -240,8 +240,10 @@ fn now() -> i64 {
 impl Viewer {
     fn layout(self: &Rc<Self>) {
         let header = adw::HeaderBar::new();
-        header.set_title_widget(Some(&self.picker.root));
+        header.set_show_title(false);
+        header.set_show_end_title_buttons(!omarchy_theme::is_installed());
         header.pack_start(&self.machine_picker.root);
+        header.pack_end(&self.picker.root);
 
         for card in self.cards.all() {
             self.charts_column.append(&card.root);

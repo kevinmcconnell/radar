@@ -120,8 +120,11 @@ impl MachinePicker {
         full.append(&show);
 
         let list = machine_list();
+        let drop_down = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        drop_down.append(&list);
+        drop_down.append(&hint());
         let popover = gtk::Popover::builder()
-            .child(&list)
+            .child(&drop_down)
             .autohide(false)
             .has_arrow(false)
             .position(gtk::PositionType::Bottom)
@@ -141,6 +144,7 @@ impl MachinePicker {
         let compact_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
         compact_box.append(&compact_bar);
         compact_box.append(&compact_list);
+        compact_box.append(&hint());
         let compact = gtk::MenuButton::builder()
             .icon_name(LOCAL_ICON)
             .tooltip_text(THIS_COMPUTER)
@@ -262,8 +266,7 @@ impl MachinePicker {
                     let current = p.current.borrow().clone();
                     p.compact_entry
                         .set_text(current.as_deref().unwrap_or_default());
-                    let any = p.fill_list(&p.compact_list);
-                    p.compact_list.set_visible(any);
+                    p.fill_list(&p.compact_list);
                 })
             });
         }
@@ -314,7 +317,8 @@ impl MachinePicker {
             .root()
             .and_downcast::<gtk::Window>()
             .is_some_and(|w| w.is_active());
-        if active && self.fill_list(&self.list) {
+        if active {
+            self.fill_list(&self.list);
             self.popover.set_size_request(self.full.width(), -1);
             self.popover.popup();
         } else {
@@ -322,14 +326,8 @@ impl MachinePicker {
         }
     }
 
-    /// Fill `list` with this computer and the recent machines, unless there
-    /// are no recent machines to offer.
-    fn fill_list(&self, list: &gtk::ListBox) -> bool {
+    fn fill_list(&self, list: &gtk::ListBox) {
         let machines = recent();
-        if machines.is_empty() {
-            return false;
-        }
-
         list.remove_all();
         self.add_row(list, None, &glib::host_name(), THIS_COMPUTER, LOCAL_ICON);
         for m in &machines {
@@ -343,7 +341,6 @@ impl MachinePicker {
         *self.choices.borrow_mut() = std::iter::once(None)
             .chain(machines.into_iter().map(|m| Some(m.machine)))
             .collect();
-        true
     }
 
     fn add_row(
@@ -374,6 +371,17 @@ fn machine_entry() -> gtk::builders::EntryBuilder {
         .primary_icon_name(LOCAL_ICON)
         .tooltip_text("The machine to show, as an ssh destination like user@host")
         .max_width_chars(24)
+}
+
+/// Wraps to whatever width the drop-down is given instead of widening it.
+fn hint() -> gtk::Label {
+    gtk::Label::builder()
+        .label("Type an ssh destination like user@host and press Enter. Radar needs to be installed there.")
+        .wrap(true)
+        .max_width_chars(1)
+        .xalign(0.0)
+        .css_classes(["dim-label", "caption"])
+        .build()
 }
 
 fn show_button() -> gtk::Button {
