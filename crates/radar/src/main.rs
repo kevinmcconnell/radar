@@ -13,11 +13,11 @@ use std::path::PathBuf;
 use adw::prelude::*;
 use gtk::glib;
 
-use crate::range::PRESETS;
+use crate::range::{PRESETS, preset_named};
 
 const APP_ID: &str = "dev.radar.Radar";
 
-const USAGE: &str = "Usage: radar [--db <path>] [--range 1h|6h|24h|3d|5d]";
+const USAGE: &str = "Usage: radar [--db <path>] [--range 5m|10m|15m|30m|1h|6h|24h|3d|5d]";
 
 fn parse_args() -> (PathBuf, i64) {
     let mut db = radar_core::db::default_db_path();
@@ -31,8 +31,8 @@ fn parse_args() -> (PathBuf, i64) {
             },
             "--range" => {
                 let name = args.next().unwrap_or_default();
-                match PRESETS.iter().find(|p| p.0 == name) {
-                    Some(p) => range = p.1,
+                match preset_named(&name) {
+                    Some(secs) => range = secs,
                     None => exit_usage(&format!("unknown range {name:?}")),
                 }
             }
@@ -54,6 +54,7 @@ fn exit_usage(message: &str) -> ! {
 fn main() -> glib::ExitCode {
     let (db, range) = parse_args();
     let app = adw::Application::builder().application_id(APP_ID).build();
+    app.connect_startup(|_| range::load_style());
     app.connect_activate(move |app| {
         if let Some(window) = app.active_window() {
             window.present();

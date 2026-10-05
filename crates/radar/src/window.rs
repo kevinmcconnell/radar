@@ -590,6 +590,7 @@ mod tests {
 
     #[test]
     fn longer_ranges_refresh_less_often() {
+        assert_eq!(refresh_secs(300), 5);
         assert_eq!(refresh_secs(3600), 5);
         assert_eq!(refresh_secs(6 * 3600), 30);
         assert_eq!(refresh_secs(86400), 60);
