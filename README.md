@@ -9,8 +9,8 @@ desktop. It has two parts:
 
 - **`radar-collect`** samples CPU, temperatures, memory, network, disk and
   per-process CPU time every five seconds into a SQLite database. It runs as
-  a systemd user service, reads only `/proc` and `/sys`, and keeps a rolling
-  window of five days.
+  a systemd user service, reads only `/proc`, `/sys` and the local logs of
+  AI coding agents, and keeps a rolling window of five days.
 - **`radar`** is a GTK 4 / libadwaita app. Pick a time range and see charts of
   that activity, plus the processes that used the most CPU in that range.
 
@@ -41,6 +41,35 @@ Run `make uninstall` to remove it all again.
 The database lives at `~/.local/share/radar/radar.db`. Run
 `radar-collect --help` for the sampling interval and retention flags, and
 `radar --help` for the viewer's options.
+
+## AI agents
+
+Radar can chart how much of your Codex and Claude Code rate limits you have
+used, and the tokens each agent is consuming. Neither needs network access or
+credentials. Both cards appear once an agent has reported something.
+
+**Codex** needs no setup. The collector tails the session logs under
+`~/.codex/sessions` (or `$CODEX_HOME/sessions`), which carry a quota snapshot
+and a token count with every response.
+
+**Claude Code** does not persist its quota anywhere, but it pipes the data to a
+status line command after every assistant message. `make install` puts
+`radar-claude-statusline` in `~/.local/bin`; it saves that JSON under
+`~/.local/state/radar/claude/`, one line per update, and prints nothing. Enable it in
+`~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "radar-claude-statusline"
+  }
+}
+```
+
+If you already have a status line, add a line to your script that pipes its
+input through `radar-claude-statusline` as well. The rate-limit fields appear
+only on claude.ai Pro and Max subscriptions.
 
 ## Releasing
 

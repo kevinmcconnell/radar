@@ -7,6 +7,7 @@ pub enum Format {
     Rpm,
     Watts,
     Frequency,
+    TokensPerMin,
 }
 
 impl Format {
@@ -24,6 +25,9 @@ impl Format {
             Format::Watts => format!("{} W", trim_float(v, 1)),
             Format::Frequency if v >= 1000.0 => format!("{} GHz", trim_float(v / 1000.0, 2)),
             Format::Frequency => format!("{} MHz", trim_float(v, 0)),
+            Format::TokensPerMin if v >= 1e6 => format!("{}M tok/min", trim_float(v / 1e6, 2)),
+            Format::TokensPerMin if v >= 1e3 => format!("{}k tok/min", trim_float(v / 1e3, 1)),
+            Format::TokensPerMin => format!("{} tok/min", trim_float(v, 0)),
         }
     }
 }
@@ -175,6 +179,10 @@ mod tests {
         assert_eq!(Format::Frequency.format(4853.2), "4.85 GHz");
         assert_eq!(Format::Frequency.format(4000.0), "4 GHz");
         assert_eq!(Format::Frequency.format(624.194), "624 MHz");
+        assert_eq!(Format::TokensPerMin.format(0.0), "0 tok/min");
+        assert_eq!(Format::TokensPerMin.format(840.4), "840 tok/min");
+        assert_eq!(Format::TokensPerMin.format(12_340.0), "12.3k tok/min");
+        assert_eq!(Format::TokensPerMin.format(2_500_000.0), "2.5M tok/min");
     }
 
     #[test]

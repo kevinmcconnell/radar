@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
+use crate::agents::Agents;
 use crate::discover::{Discovery, Reading, discover};
 use crate::parse::{self, CpuTimes, PidStat};
 
@@ -206,6 +207,8 @@ pub struct Sampler {
     physical_cores: Vec<(f64, f64)>,
     net: PairCounters,
     disk: PairCounters,
+    agents: Agents,
+    agent_sources: usize,
     pub discovery: Discovery,
     pub procs: ProcTracker,
     pub sample: Sample,
@@ -218,7 +221,7 @@ pub fn read_into(path: &Path, buf: &mut Vec<u8>) -> io::Result<()> {
 }
 
 impl Sampler {
-    pub fn new(root: &Path, clk_tck: u64) -> Self {
+    pub fn new(root: &Path, clk_tck: u64, agents: Agents) -> Self {
         let proc_dir = root.join("proc");
         let mut s = Sampler {
             root: root.to_path_buf(),
@@ -238,6 +241,8 @@ impl Sampler {
             physical_cores: Vec::new(),
             net: PairCounters::default(),
             disk: PairCounters::default(),
+            agents,
+            agent_sources: 0,
             discovery: Discovery::default(),
             procs: ProcTracker::default(),
             sample: Sample::default(),
@@ -248,6 +253,8 @@ impl Sampler {
 
     pub fn rediscover(&mut self) {
         self.discovery = discover(&self.root);
+        self.discovery.sensors.extend(self.agents.sources());
+        self.agent_sources = self.agents.source_count();
         let freqs = &self.discovery.core_freqs;
         let cpus = freqs.iter().map(|c| c.cpu + 1).max().unwrap_or(0);
         let cores = freqs.iter().map(|c| c.core + 1).max().unwrap_or(0);
@@ -259,12 +266,18 @@ impl Sampler {
         self.procs.totals.clear();
     }
 
+    /// An agent has reported a rate-limit window that has no sensor yet.
+    pub fn has_new_sources(&self) -> bool {
+        self.agents.source_count() != self.agent_sources
+    }
+
     pub fn reset_baselines(&mut self) {
         self.cpu_prev = None;
         self.core_prev.fill(None);
         self.net.reset();
         self.disk.reset();
         self.procs.reset();
+        self.agents.end_sample();
     }
 
     pub fn take(&mut self, ts: i64, dt_ms: i64) -> io::Result<()> {
@@ -326,6 +339,7 @@ impl Sampler {
         }
         let (busy_freq, fastest_freq) = core_frequencies(self.physical_cores.iter().copied());
 
+        self.agents.poll();
         s.sensors.clear();
         for (i, src) in self.discovery.sensors.iter().enumerate() {
             let value = match &src.reading {
@@ -335,11 +349,16 @@ impl Sampler {
                     .map(|v| v as f64 * scale),
                 Reading::BusyFreq => busy_freq,
                 Reading::FastestFreq => fastest_freq,
+                Reading::Quota { agent, window } => self.agents.quota(*agent, *window, ts),
+                Reading::Tokens { agent, direction } => {
+                    self.agents.tokens(*agent, *direction, dt_ms)
+                }
             };
             if let Some(v) = value {
                 s.sensors.push((i, v));
             }
         }
+        self.agents.end_sample();
 
         self.sample_procs()
     }
@@ -548,8 +567,12 @@ mod tests {
 
     #[test]
     fn sampler_reads_fixture_tree() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/amd");
-        let mut s = Sampler::new(&root, 100);
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let agents = Agents::new(&crate::agents::AgentDirs {
+            claude: Some(fixtures.join("agents/claude")),
+            codex: Some(fixtures.join("agents/codex")),
+        });
+        let mut s = Sampler::new(&fixtures.join("amd"), 100, agents);
         s.take(1000, 0).unwrap();
         let first = s.sample.clone();
         assert_eq!(first.cpu_busy, None);
@@ -577,7 +600,21 @@ mod tests {
             first.sensors.iter().all(|x| x.0 != busy),
             "no busy cores without a cpu delta"
         );
+        let agent = |chip: &str, label: &str| {
+            s.discovery
+                .sensors
+                .iter()
+                .position(|x| x.chip == chip && x.label == label)
+                .unwrap()
+        };
+        assert!(first.sensors.contains(&(agent("codex", "7d"), 28.0)));
+        assert!(first.sensors.contains(&(agent("claude", "5h"), 23.5)));
+        assert!(
+            first.sensors.iter().all(|x| x.0 != agent("codex", "input")),
+            "no token rate without an interval"
+        );
 
+        let (codex_input, claude_output) = (agent("codex", "input"), agent("claude", "output"));
         s.take(1005, 5000).unwrap();
         let second = &s.sample;
         assert_eq!(
@@ -586,5 +623,7 @@ mod tests {
         );
         assert_eq!(second.net_rx, Some(0));
         assert_eq!(second.disk_write, Some(0));
+        assert!(second.sensors.contains(&(codex_input, 0.0)));
+        assert!(second.sensors.contains(&(claude_output, 0.0)));
     }
 }

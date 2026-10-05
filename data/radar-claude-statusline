@@ -1,0 +1,12 @@
+#!/bin/sh
+# Claude Code status line command for radar. Appends the session JSON that Claude Code
+# pipes to stdin as one line of <session_id>.jsonl, so radar-collect can count every
+# response's tokens and read the rate-limit windows. Prints nothing, so the status
+# line stays empty.
+dir="${XDG_STATE_HOME:-$HOME/.local/state}/radar/claude"
+mkdir -p "$dir" || exit 0
+tmp="$dir/.incoming.$$"
+{ tr -d '\n\r' && printf '\n'; } >"$tmp" || { rm -f "$tmp"; exit 0; }
+session=$(sed -n 's/.*"session_id": *"\([A-Za-z0-9_-]*\)".*/\1/p' "$tmp" | head -n 1)
+cat "$tmp" >>"$dir/${session:-unknown}.jsonl"
+rm -f "$tmp"

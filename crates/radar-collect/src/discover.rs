@@ -3,13 +3,27 @@ use std::path::{Path, PathBuf};
 
 use radar_core::SensorKind;
 
+use crate::agents::{Agent, Direction};
+
 const MIN_PLAUSIBLE_MILLIDEGREES: i64 = -40_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reading {
-    File { path: PathBuf, scale: f64 },
+    File {
+        path: PathBuf,
+        scale: f64,
+    },
     BusyFreq,
     FastestFreq,
+    /// Percent used of the `window`th rate-limit window the agent has reported.
+    Quota {
+        agent: Agent,
+        window: usize,
+    },
+    Tokens {
+        agent: Agent,
+        direction: Direction,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

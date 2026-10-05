@@ -34,10 +34,12 @@ struct Cards {
     gpu: Card,
     fans: Card,
     power: Card,
+    quota: Card,
+    tokens: Card,
 }
 
 impl Cards {
-    fn all(&self) -> [&Card; 9] {
+    fn all(&self) -> [&Card; 11] {
         [
             &self.cpu,
             &self.freq,
@@ -48,6 +50,8 @@ impl Cards {
             &self.gpu,
             &self.fans,
             &self.power,
+            &self.quota,
+            &self.tokens,
         ]
     }
 }
@@ -134,6 +138,8 @@ pub fn build(app: &adw::Application, db: PathBuf, preset_secs: i64, theme: Theme
             gpu: Card::new("GPU", Format::Percent, YRange::Fixed(100.0)),
             fans: Card::new("Fans", Format::Rpm, YRange::Auto),
             power: Card::new("Battery Power", Format::Watts, YRange::Auto),
+            quota: Card::new("AI Quota", Format::Percent, YRange::Fixed(100.0)),
+            tokens: Card::new("AI Tokens", Format::TokensPerMin, YRange::Auto),
         };
         let status = adw::StatusPage::builder()
             .icon_name("dev.radar.Radar")
@@ -223,6 +229,8 @@ impl Viewer {
             &self.cards.gpu,
             &self.cards.fans,
             &self.cards.power,
+            &self.cards.quota,
+            &self.cards.tokens,
         ] {
             card.root.set_visible(false);
         }
@@ -469,39 +477,40 @@ impl Viewer {
                 .push((p.t, Some(p.value)));
         }
         let config = self.config.borrow();
-        let sensor_series =
-            |kind: SensorKind, filter: &dyn Fn(&Sensor) -> bool| -> (Vec<Series>, Option<Stats>) {
-                let shown: Vec<(usize, &Sensor)> = snap
-                    .sensors
-                    .iter()
-                    .filter(|s| s.kind == kind)
-                    .enumerate()
-                    .filter(|(_, s)| filter(s))
-                    .collect();
-                let stats = shown
-                    .first()
-                    .and_then(|(_, s)| snap.sensor_stats.get(&s.id).copied());
-                let series = shown
-                    .into_iter()
-                    .map(|(i, s)| {
-                        let color = if kind == SensorKind::Temp {
-                            ColorRole::Named(CYCLE[i % CYCLE.len()])
-                        } else if i == 0 {
-                            ColorRole::Accent
-                        } else {
-                            ColorRole::Named(CYCLE[i % CYCLE.len()])
-                        };
-                        let points = by_sensor.get(&s.id).cloned().unwrap_or_default();
-                        let style = match kind {
-                            SensorKind::Temp => Style::Line,
-                            SensorKind::Freq if i > 0 => Style::Line,
-                            _ => Style::Fill,
-                        };
-                        line(&sensor_label(s, &snap.sensors), points, style, color)
-                    })
-                    .collect();
-                (series, stats)
-            };
+        let sensor_series = |kind: SensorKind,
+                             filter: &dyn Fn(&Sensor) -> bool|
+         -> (Vec<Series>, Option<Stats>) {
+            let shown: Vec<(usize, &Sensor)> = snap
+                .sensors
+                .iter()
+                .filter(|s| s.kind == kind)
+                .enumerate()
+                .filter(|(_, s)| filter(s))
+                .collect();
+            let stats = shown
+                .first()
+                .and_then(|(_, s)| snap.sensor_stats.get(&s.id).copied());
+            let series = shown
+                .into_iter()
+                .map(|(i, s)| {
+                    let color = if kind == SensorKind::Temp {
+                        ColorRole::Named(CYCLE[i % CYCLE.len()])
+                    } else if i == 0 {
+                        ColorRole::Accent
+                    } else {
+                        ColorRole::Named(CYCLE[i % CYCLE.len()])
+                    };
+                    let points = by_sensor.get(&s.id).cloned().unwrap_or_default();
+                    let style = match kind {
+                        SensorKind::Temp | SensorKind::Quota | SensorKind::Tokens => Style::Line,
+                        SensorKind::Freq if i > 0 => Style::Line,
+                        _ => Style::Fill,
+                    };
+                    line(&sensor_label(s, &snap.sensors), points, style, color)
+                })
+                .collect();
+            (series, stats)
+        };
         let (series, stats) = sensor_series(SensorKind::Temp, &|s| config.visible(s));
         set(&c.temps, series, stats);
         for (card, kind) in [
@@ -509,6 +518,8 @@ impl Viewer {
             (&c.gpu, SensorKind::GpuBusy),
             (&c.fans, SensorKind::Fan),
             (&c.power, SensorKind::Power),
+            (&c.quota, SensorKind::Quota),
+            (&c.tokens, SensorKind::Tokens),
         ] {
             let (series, stats) = sensor_series(kind, &|s| config.visible(s));
             card.root

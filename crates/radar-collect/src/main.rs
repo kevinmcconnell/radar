@@ -1,3 +1,4 @@
+mod agents;
 mod cli;
 mod demo;
 mod discover;
@@ -12,6 +13,7 @@ use std::time::Duration;
 
 use radar_core::db;
 
+use crate::agents::{AgentDirs, Agents};
 use crate::cli::{Args, Mode};
 use crate::discover::Reading;
 use crate::sampler::Sampler;
@@ -54,7 +56,7 @@ fn run(args: &Args) -> Result<(), Box<dyn Error>> {
     let clk_tck = sys::clk_tck();
     let mut writer = Writer::new(db::open_rw(&args.db)?);
     writer.write_meta(clk_tck, sys::ncpus(&args.root), &hostname(&args.root))?;
-    let mut sampler = Sampler::new(&args.root, clk_tck);
+    let mut sampler = Sampler::new(&args.root, clk_tck, Agents::new(&AgentDirs::from_env()));
     writer.register_sensors(&sampler.discovery.sensors)?;
 
     let interval = args.interval as i64;
@@ -82,7 +84,7 @@ fn run(args: &Args) -> Result<(), Box<dyn Error>> {
         if gap {
             sampler.reset_baselines();
         }
-        if ts >= next_discover || (gap && last.is_some()) {
+        if ts >= next_discover || (gap && last.is_some()) || sampler.has_new_sources() {
             sampler.rediscover();
             if let Err(e) = writer.register_sensors(&sampler.discovery.sensors) {
                 eprintln!("radar-collect: registering sensors: {e}");
@@ -116,7 +118,7 @@ fn run(args: &Args) -> Result<(), Box<dyn Error>> {
 
 fn once(args: &Args) -> Result<(), Box<dyn Error>> {
     let clk_tck = sys::clk_tck();
-    let mut sampler = Sampler::new(&args.root, clk_tck);
+    let mut sampler = Sampler::new(&args.root, clk_tck, Agents::new(&AgentDirs::from_env()));
     let start = sys::boottime_ms();
     sampler.take(sys::wall_secs(), 0)?;
     print_sample(&sampler, clk_tck);
@@ -191,13 +193,18 @@ fn human_bytes(v: f64) -> String {
 }
 
 fn list_sensors(root: &Path) {
-    let d = discover::discover(root);
+    let mut d = discover::discover(root);
+    let agents = Agents::new(&AgentDirs::from_env());
+    d.sensors.extend(agents.sources());
     println!("sensors:");
     for s in &d.sensors {
         let source = match &s.reading {
             Reading::File { path, .. } => path.display().to_string(),
             Reading::BusyFreq | Reading::FastestFreq => {
                 format!("{} cpus, cpufreq/scaling_cur_freq", d.core_freqs.len())
+            }
+            Reading::Quota { agent, .. } | Reading::Tokens { agent, .. } => {
+                agents.describe(*agent).unwrap_or_default()
             }
         };
         println!(

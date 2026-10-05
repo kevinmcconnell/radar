@@ -136,6 +136,8 @@ Expected size at 5 days: ~86k `sys_samples` rows, a few hundred thousand `sensor
 | Battery power (optional) | `/sys/class/power_supply/BAT*/power_now` | Microwatts; laptops only. |
 | CPU clock (optional) | `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq` | kHz per CPU thread. The threads of one physical core (`topology/physical_package_id` and `core_id`) share a clock, so a core has the highest speed and the highest busy share of its threads. An idle thread reports the minimum speed. Stored as two sensors on chip `cpu`: `busy cores` (mean over the cores that were busy for at least 90% of the interval, weighted by their busy share from the `cpuN` lines of `/proc/stat`; no value when there is no such core) and `fastest core`. Under sustained load, `busy cores` drops when the CPU throttles. |
 | Per-process CPU | `/proc/[pid]/stat` | See below. |
+| AI quota (optional) | Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; Claude Code: `$XDG_STATE_HOME/radar/claude/<session>.jsonl` | Percent used of each rate-limit window, as a gauge that reads 0 once the window's `resets_at` passes. Codex writes a `token_count` event with `rate_limits.primary` (5h) and `secondary` (7d) on every API response; only the newest seven day directories are watched, and each file is read from where the last read stopped. Claude Code has no local quota file, so the `radar-claude-statusline` script appends each status line JSON (`rate_limits.five_hour` / `seven_day`) to a per-session file, which the collector tails like the Codex logs. Stored as sensors on chip `claude` or `codex`, labels `5h` and `7d`. |
+| AI tokens (optional) | Same files | Tokens per minute, input and output, from the responses seen during the interval. Codex: `token_usage_record.usage`, deduplicated by `response_id`. Claude Code: `context_window.total_input_tokens` / `total_output_tokens` of the most recent response, counted when `cost.total_api_duration_ms` changes. Stored as sensors with labels `input` and `output`. |
 
 Re-run sensor, interface and disk discovery every 5 minutes, to handle hotplug (USB NICs, docks).
 
@@ -208,6 +210,7 @@ The `install` target places this unit and enables it.
   5. **Network** — rx and tx in bytes/sec. rx filled above the axis, tx as a line, or both filled with transparency.
   6. **Disk** — read and write in bytes/sec, same style.
   7. Optional GPU busy / fans / battery power cards, shown only if those sensors exist. The fans card has the same sensor menu as Temperatures.
+  8. Optional AI Quota and AI Tokens cards, one line per agent and window, shown only if an agent has reported.
 - **Top processes panel** (side pane on wide windows, below the charts on narrow ones; use `AdwBreakpoint`).
   - Top N (default 10) process names by CPU time in the selected range.
   - Each row shows: name, CPU time (e.g. "2h 14m"), % of machine capacity over the range, and a horizontal bar.

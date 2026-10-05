@@ -76,6 +76,42 @@ const PROCS: &[(&str, f64)] = &[
     ("waybar", 0.02),
 ];
 
+/// A coding agent that works in sessions of a few turns, each turn a burst of tokens that
+/// fills its rolling quota windows.
+#[derive(Default)]
+struct AgentDemo {
+    turns_left: i64,
+    five_hour: f64,
+    seven_day: f64,
+}
+
+impl AgentDemo {
+    /// Quota used and tokens per minute over `interval` seconds.
+    fn step(&mut self, ts: i64, interval: i64, act: f64, rng: &mut Rng) -> (f64, f64) {
+        if ts % (5 * 3600) < interval {
+            self.five_hour = 0.0;
+        }
+        if ts % (7 * 86400) < interval {
+            self.seven_day = 0.0;
+        }
+        if self.turns_left == 0 && rng.chance(act / 120.0) {
+            self.turns_left = (rng.range(2.0, 12.0) * 60.0) as i64 / interval;
+        }
+        if self.turns_left == 0 || !rng.chance(0.35) {
+            self.turns_left = (self.turns_left - 1).max(0);
+            return (0.0, 0.0);
+        }
+        self.turns_left -= 1;
+        let input = rng.range(20_000.0, 120_000.0);
+        let output = rng.range(200.0, 3_000.0);
+        let share = (input + 5.0 * output) / 4e7;
+        self.five_hour = (self.five_hour + share * 100.0).min(100.0);
+        self.seven_day = (self.seven_day + share * 100.0 / 6.0).min(100.0);
+        let per_min = 60.0 / interval as f64;
+        (input * per_min, output * per_min)
+    }
+}
+
 pub fn seed(path: &Path, root: &Path, days: u64, interval: i64) -> Result<(), Box<dyn Error>> {
     let conn = db::open_rw(path)?;
     conn.pragma_update(None, "synchronous", "OFF")?;
@@ -95,6 +131,14 @@ pub fn seed(path: &Path, root: &Path, days: u64, interval: i64) -> Result<(), Bo
         sensor(SensorKind::GpuBusy, "amdgpu", "card1"),
         sensor(SensorKind::Freq, "cpu", "busy cores"),
         sensor(SensorKind::Freq, "cpu", "fastest core"),
+        sensor(SensorKind::Quota, "claude", "5h"),
+        sensor(SensorKind::Quota, "claude", "7d"),
+        sensor(SensorKind::Tokens, "claude", "input"),
+        sensor(SensorKind::Tokens, "claude", "output"),
+        sensor(SensorKind::Quota, "codex", "5h"),
+        sensor(SensorKind::Quota, "codex", "7d"),
+        sensor(SensorKind::Tokens, "codex", "input"),
+        sensor(SensorKind::Tokens, "codex", "output"),
     ];
     writer.register_sensors(&sensors)?;
 
@@ -111,6 +155,7 @@ pub fn seed(path: &Path, root: &Path, days: u64, interval: i64) -> Result<(), Bo
     let mut tctl = 40.0;
     let mut nvme = 38.0;
     let mut load = 0.5;
+    let mut agents = [AgentDemo::default(), AgentDemo::default()];
     let mut after_gap = true;
     let mut sample = Sample {
         mem_total: (64.0 * GIB) as i64,
@@ -224,6 +269,18 @@ pub fn seed(path: &Path, root: &Path, days: u64, interval: i64) -> Result<(), Bo
             sample
                 .sensors
                 .push((8, 5300.0 - cpu * 5.0 - throttle + rng.range(-80.0, 80.0)));
+        }
+        for (n, agent) in agents.iter_mut().enumerate() {
+            let (input, output) = agent.step(ts, interval, act, &mut rng);
+            let base = 10 + n * 4;
+            sample
+                .sensors
+                .extend([(base, agent.five_hour), (base + 1, agent.seven_day)]);
+            if !after_gap {
+                sample
+                    .sensors
+                    .extend([(base + 2, input), (base + 3, output)]);
+            }
         }
 
         procs.clear();

@@ -15,6 +15,7 @@ test:
 install: build
 	install -Dm755 target/release/radar-collect $(BINDIR)/radar-collect
 	install -Dm755 target/release/radar $(BINDIR)/radar
+	install -Dm755 data/radar-claude-statusline $(BINDIR)/radar-claude-statusline
 	install -Dm644 data/radar-collect.service $(UNITDIR)/radar-collect.service
 	install -Dm644 data/$(APP_ID).desktop $(DATADIR)/applications/$(APP_ID).desktop
 	install -Dm644 data/$(APP_ID).svg $(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
@@ -24,7 +25,7 @@ install: build
 
 uninstall:
 	-systemctl --user disable --now radar-collect
-	rm -f $(BINDIR)/radar-collect $(BINDIR)/radar
+	rm -f $(BINDIR)/radar-collect $(BINDIR)/radar $(BINDIR)/radar-claude-statusline
 	rm -f $(UNITDIR)/radar-collect.service
 	rm -f $(DATADIR)/applications/$(APP_ID).desktop
 	rm -f $(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
