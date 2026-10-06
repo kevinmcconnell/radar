@@ -228,8 +228,15 @@ pub fn meta(conn: &Connection) -> rusqlite::Result<Meta> {
     Ok(meta)
 }
 
+/// Main holds the oldest sample once anything has been flushed into it, and
+/// finding it there uses the primary key. Only while main is still empty is
+/// the view over both databases scanned.
 pub fn oldest_sample(conn: &Connection) -> rusqlite::Result<Option<i64>> {
-    conn.query_row("SELECT MIN(ts) FROM sys_samples", [], |r| r.get(0))
+    conn.query_row(
+        "SELECT coalesce((SELECT min(ts) FROM main.sys_samples), (SELECT min(ts) FROM sys_samples))",
+        [],
+        |r| r.get(0),
+    )
 }
 
 #[cfg(test)]
@@ -298,6 +305,7 @@ mod tests {
     #[test]
     fn top_procs_sums_over_range() {
         let mut conn = db::open_rw_in_memory().unwrap();
+        db::attach_live(&conn, None).unwrap();
         conn.execute_batch(
             "INSERT INTO proc_names (id, name) VALUES (1, 'firefox'), (2, 'cargo'), (3, 'old');
              INSERT INTO proc_minutes VALUES (60, 1, 100), (120, 1, 50), (60, 2, 300), (0, 3, 999);",
@@ -485,6 +493,7 @@ mod tests {
     #[test]
     fn trim_keeps_sensor_samples_and_rollups_in_step() {
         let mut conn = db::open_rw_in_memory().unwrap();
+        db::attach_live(&conn, None).unwrap();
         conn.execute_batch(
             "INSERT INTO sensors VALUES (1, 'temp', 'k10temp', 'Tctl', '°C');
              INSERT INTO sensor_samples VALUES (590, 1, 5.0), (900, 1, 10.0), (1000, 1, 50.0);",

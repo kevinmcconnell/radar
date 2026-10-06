@@ -67,9 +67,84 @@ GROUP BY 1, 2;
 "#,
 ];
 
+/// The sample tables again, for the live database: the same columns and keys,
+/// but no `REFERENCES`, because foreign keys cannot cross databases. The live
+/// file is ephemeral, so a schema change here needs no migration; the
+/// collector would flush and recreate it.
+const LIVE_TABLE_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS live.sys_samples (
+  ts          INTEGER PRIMARY KEY,
+  dt_ms       INTEGER NOT NULL,
+  cpu_busy    REAL,
+  cpu_iowait  REAL,
+  load1       REAL NOT NULL,
+  mem_used    INTEGER NOT NULL,
+  mem_total   INTEGER NOT NULL,
+  swap_used   INTEGER NOT NULL,
+  net_rx      INTEGER,
+  net_tx      INTEGER,
+  disk_read   INTEGER,
+  disk_write  INTEGER
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS live.sensor_samples (
+  ts         INTEGER NOT NULL,
+  sensor_id  INTEGER NOT NULL,
+  value      REAL NOT NULL,
+  PRIMARY KEY (ts, sensor_id)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS live.sensor_rollups (
+  ts         INTEGER NOT NULL,
+  sensor_id  INTEGER NOT NULL,
+  total      REAL NOT NULL,
+  peak       REAL NOT NULL,
+  samples    INTEGER NOT NULL,
+  PRIMARY KEY (ts, sensor_id)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS live.proc_minutes (
+  ts         INTEGER NOT NULL,
+  name_id    INTEGER NOT NULL,
+  cpu_ticks  INTEGER NOT NULL,
+  PRIMARY KEY (ts, name_id)
+) STRICT, WITHOUT ROWID;
+"#;
+
+/// The tables that samples are written to first, and that the viewer reads
+/// from both databases, with their columns.
+pub const LIVE_TABLES: [(&str, &str); 4] = [
+    (
+        "sys_samples",
+        "ts, dt_ms, cpu_busy, cpu_iowait, load1, mem_used, mem_total, swap_used, \
+         net_rx, net_tx, disk_read, disk_write",
+    ),
+    ("sensor_samples", "ts, sensor_id, value"),
+    ("sensor_rollups", "ts, sensor_id, total, peak, samples"),
+    ("proc_minutes", "ts, name_id, cpu_ticks"),
+];
+
+/// The `meta` key holding the number of the last staged batch merged into
+/// main. Staged rows with that batch number or lower are already in main.
+pub const FLUSHED_BATCH_META: &str = "flushed_batch";
+
 pub const SENSOR_ROLLUP_SECS: i64 = 300;
 
 pub const VERSION: i64 = MIGRATIONS.len() as i64;
+
+/// Creates the sample tables in the database attached as `live`, and beside
+/// each a `staged_` table that holds rows on their way into main, tagged
+/// with the batch they were staged in.
+pub fn create_live(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(LIVE_TABLE_DDL)?;
+    for (table, _) in LIVE_TABLES {
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS live.staged_{table} AS
+               SELECT *, CAST(0 AS INTEGER) AS batch FROM live.{table} WHERE 0"
+        ))?;
+    }
+    Ok(())
+}
 
 pub fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;

@@ -63,15 +63,35 @@ impl Problem {
 }
 
 /// Reads snapshots from the database at `path`, opening it on first use and
-/// again after any error, so a collector started later is picked up.
+/// again after any error, so a collector started later is picked up. The
+/// collector's live database, found through `meta`, is read alongside it
+/// once that file exists.
 pub struct Reader {
     path: PathBuf,
+    live: Option<PathBuf>,
+    live_from_meta: bool,
     conn: Option<Connection>,
+    live_attached: bool,
 }
 
 impl Reader {
     pub fn new(path: PathBuf) -> Self {
-        Reader { path, conn: None }
+        Reader {
+            path,
+            live: None,
+            live_from_meta: true,
+            conn: None,
+            live_attached: false,
+        }
+    }
+
+    /// Reads the live database at `live` rather than the one `meta` names.
+    pub fn with_live(path: PathBuf, live: Option<PathBuf>) -> Self {
+        Reader {
+            live,
+            live_from_meta: false,
+            ..Reader::new(path)
+        }
     }
 
     pub fn snapshot(&mut self, q: &Query) -> Reply {
@@ -85,8 +105,22 @@ impl Reader {
     fn read(&mut self, q: &Query) -> Reply {
         if self.conn.is_none() {
             self.conn = Some(self.open()?);
+            self.live_attached = false;
         }
         let conn = self.conn.as_ref().unwrap();
+        if !self.live_attached {
+            if self.live_from_meta {
+                self.live = db::get_meta(conn, db::LIVE_DB_META)
+                    .map_err(Problem::unreadable)?
+                    .map(PathBuf::from);
+            }
+            if let Some(live) = self.live.as_deref()
+                && live.exists()
+            {
+                db::attach_live_views(conn, live).map_err(Problem::unreadable)?;
+                self.live_attached = true;
+            }
+        }
         read_snapshot(conn, q).map_err(Problem::unreadable)
     }
 
@@ -115,7 +149,16 @@ impl Reader {
     }
 }
 
+/// One read transaction, so every part of the snapshot sees the same moment
+/// in both databases.
 fn read_snapshot(conn: &Connection, q: &Query) -> rusqlite::Result<Snapshot> {
+    let tx = conn.unchecked_transaction()?;
+    let snapshot = read_parts(&tx, q)?;
+    tx.commit()?;
+    Ok(snapshot)
+}
+
+fn read_parts(conn: &Connection, q: &Query) -> rusqlite::Result<Snapshot> {
     let sensor_data = query::sensor_series(conn, q.from, q.to, q.bucket)?;
     Ok(Snapshot {
         from: q.from,
@@ -160,10 +203,15 @@ pub fn serve(
 mod tests {
     use super::*;
 
-    fn seeded_db(name: &str) -> PathBuf {
+    fn temp_path(name: &str) -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("radar-snapshot-{name}-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn seeded_db(name: &str) -> PathBuf {
+        let path = temp_path(name);
         let conn = db::open_rw(&path).unwrap();
         conn.execute_batch(
             "INSERT INTO sys_samples (ts, dt_ms, cpu_busy, cpu_iowait, load1, mem_used, mem_total,
@@ -178,6 +226,24 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    /// The rest of the samples that `seeded_db` starts, into the tables of
+    /// database `schema`. In main they land in the rows already there; in live
+    /// they are separate rows that the views add together.
+    fn add_later_samples(conn: &Connection, schema: &str) {
+        conn.execute_batch(&format!(
+            "INSERT INTO {schema}.sys_samples (ts, dt_ms, cpu_busy, cpu_iowait, load1, mem_used,
+                                      mem_total, swap_used, net_rx, net_tx, disk_read, disk_write)
+             VALUES (1005, 5000, 75.0, 1.0, 1.0, 300, 1000, 0, 500, 500, 500, 500);
+             INSERT INTO {schema}.sensor_samples VALUES (1005, 1, 65.0);
+             INSERT INTO {schema}.sensor_rollups VALUES (900, 1, 65.0, 65.0, 1)
+               ON CONFLICT DO UPDATE SET total = total + excluded.total,
+                 peak = max(peak, excluded.peak), samples = samples + excluded.samples;
+             INSERT INTO {schema}.proc_minutes VALUES (960, 1, 200), (1020, 1, 100)
+               ON CONFLICT DO UPDATE SET cpu_ticks = cpu_ticks + excluded.cpu_ticks;"
+        ))
+        .unwrap();
     }
 
     const QUERY: Query = Query {
@@ -224,6 +290,53 @@ mod tests {
         );
         assert_eq!(replies[2], Ok(expected));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn samples_in_the_live_database_are_read_with_the_rest() {
+        let all_in_main = seeded_db("all-main");
+        add_later_samples(&db::open_rw(&all_in_main).unwrap(), "main");
+        let expected = Reader::with_live(all_in_main.clone(), None)
+            .snapshot(&QUERY)
+            .unwrap();
+        assert_eq!(expected.procs[0].ticks, 600);
+        assert_eq!(expected.sys_stats.cpu_busy.unwrap().avg, 50.0);
+
+        let main = seeded_db("split-main");
+        let live = temp_path("split-live");
+        let mut reader = Reader::new(main.clone());
+        let before = reader.snapshot(&QUERY).unwrap();
+        assert_eq!(before.procs[0].ticks, 300);
+
+        let conn = db::open_rw(&main).unwrap();
+        db::attach_live(&conn, Some(&live)).unwrap();
+        db::set_meta(&conn, db::LIVE_DB_META, live.to_str().unwrap()).unwrap();
+        add_later_samples(&conn, "live");
+        let split = reader.snapshot(&QUERY).unwrap();
+        assert_eq!(split, expected);
+        for bucket in [5, 300] {
+            let q = Query { bucket, ..QUERY };
+            assert_eq!(
+                reader.snapshot(&q).unwrap(),
+                Reader::with_live(all_in_main.clone(), None)
+                    .snapshot(&q)
+                    .unwrap()
+            );
+        }
+
+        // rows staged on their way into main count once: only the batch main
+        // has not merged yet shows
+        conn.execute_batch(
+            "DELETE FROM live.proc_minutes;
+             INSERT INTO live.staged_proc_minutes VALUES (960, 1, 200, 1), (1020, 1, 100, 1);
+             INSERT INTO live.staged_proc_minutes VALUES (1020, 1, 500, 2);",
+        )
+        .unwrap();
+        db::set_meta(&conn, schema::FLUSHED_BATCH_META, "1").unwrap();
+        assert_eq!(reader.snapshot(&QUERY).unwrap().procs[0].ticks, 800);
+        for path in [all_in_main, main, live] {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     #[test]
