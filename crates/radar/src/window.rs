@@ -338,12 +338,13 @@ impl Viewer {
         let breakpoint =
             adw::Breakpoint::new(adw::BreakpointCondition::parse("max-width: 960sp").unwrap());
         {
-            let (procs, column, side, side_box, picker) = (
+            let (procs, column, side, side_box, picker, range) = (
                 self.procs.root.clone(),
                 self.charts_column.clone(),
                 side.clone(),
                 side_box.clone(),
                 self.machine_picker.clone(),
+                self.picker.clone(),
             );
             breakpoint.connect_apply(move |_| {
                 side.set_child(None::<&gtk::Widget>);
@@ -352,15 +353,17 @@ impl Viewer {
                 column.append(&procs);
                 side_box.set_visible(false);
                 picker.set_compact(true);
+                range.set_compact(true);
             });
         }
         {
-            let (procs, column, side, side_box, picker) = (
+            let (procs, column, side, side_box, picker, range) = (
                 self.procs.root.clone(),
                 self.charts_column.clone(),
                 side.clone(),
                 side_box.clone(),
                 self.machine_picker.clone(),
+                self.picker.clone(),
             );
             breakpoint.connect_unapply(move |_| {
                 column.remove(&procs);
@@ -369,6 +372,7 @@ impl Viewer {
                 side.set_child(Some(&procs));
                 side_box.set_visible(true);
                 picker.set_compact(false);
+                range.set_compact(false);
             });
         }
         self.window.add_breakpoint(breakpoint);

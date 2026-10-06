@@ -19,8 +19,7 @@ use crate::range::{PRESETS, preset_named};
 
 const APP_ID: &str = "dev.radar.Radar";
 
-const USAGE: &str =
-    "Usage: radar [--db <path>] [--range 5m|10m|15m|30m|1h|6h|24h|3d|5d] [user@host]";
+const USAGE: &str = "Usage: radar [--db <path>] [--range 5m|10m|15m|30m|1h|6h|24h|5d] [user@host]";
 
 fn parse_args() -> (PathBuf, Option<String>, i64) {
     let mut db = radar_core::db::default_db_path();
