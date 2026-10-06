@@ -116,7 +116,7 @@ pub fn seed(path: &Path, root: &Path, days: u64, interval: i64) -> Result<(), Bo
     let conn = db::open_rw(path)?;
     conn.pragma_update(None, "synchronous", "OFF")?;
     let offset = utc_offset_secs(&conn)?;
-    let mut writer = Writer::new(conn);
+    let mut writer = Writer::new(conn, None)?;
     let ncpus = sys::ncpus(root);
     writer.write_meta(CLK_TCK, ncpus, "demo")?;
 
@@ -307,10 +307,14 @@ pub fn seed(path: &Path, root: &Path, days: u64, interval: i64) -> Result<(), Bo
             }
         }
         writer.write(&sample, procs.iter().copied())?;
+        if ts % 86400 == 0 {
+            writer.flush(ts)?;
+        }
 
         after_gap = false;
         ts += interval;
     }
+    writer.flush(i64::MAX)?;
     println!("seeded {days} days into {}", path.display());
     Ok(())
 }

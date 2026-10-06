@@ -12,6 +12,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use radar_core::db;
+use radar_core::schema::SENSOR_ROLLUP_SECS;
 use radar_core::snapshot::{self, Reader};
 
 use crate::agents::{AgentDirs, Agents};
@@ -56,7 +57,7 @@ fn hostname(root: &Path) -> String {
 fn run(args: &Args) -> Result<(), Box<dyn Error>> {
     sys::install_signal_handlers()?;
     let clk_tck = sys::clk_tck();
-    let mut writer = Writer::new(db::open_rw(&args.db)?);
+    let mut writer = Writer::new(db::open_rw(&args.db)?, db::live_path(&args.db).as_deref())?;
     writer.write_meta(clk_tck, sys::ncpus(&args.root), &hostname(&args.root))?;
     let mut sampler = Sampler::new(&args.root, clk_tck, Agents::new(&AgentDirs::from_env()));
     writer.register_sensors(&sampler.discovery.sensors)?;
@@ -66,6 +67,10 @@ fn run(args: &Args) -> Result<(), Box<dyn Error>> {
     let mut last: Option<(i64, i64)> = None;
     let mut next_discover = sys::wall_secs() + REDISCOVER_SECS;
     let mut next_trim = 0;
+    let mut flushed = sys::wall_secs();
+
+    // samples left behind by a crash are still in the live file
+    flush_and_trim(&mut writer, i64::MAX, flushed, retention, &mut next_trim);
 
     while !sys::stopping() {
         let ts = (sys::wall_secs() / interval + 1) * interval;
@@ -108,14 +113,32 @@ fn run(args: &Args) -> Result<(), Box<dyn Error>> {
             }
         };
 
-        if ts >= next_trim {
-            if let Err(e) = writer.trim(ts - retention) {
-                eprintln!("radar-collect: trimming: {e}");
-            }
-            next_trim = ts + TRIM_SECS;
+        let boundary = ts.div_euclid(SENSOR_ROLLUP_SECS) * SENSOR_ROLLUP_SECS;
+        if !writer.buffered() {
+            flush_and_trim(&mut writer, i64::MAX, ts, retention, &mut next_trim);
+        } else if boundary > flushed {
+            flush_and_trim(&mut writer, boundary, ts, retention, &mut next_trim);
+            flushed = boundary;
         }
     }
+    if let Err(e) = writer.flush(i64::MAX) {
+        eprintln!("radar-collect: flushing: {e}");
+    }
     Ok(())
+}
+
+/// Trimming only follows a flush, so it never sees a bucket half moved.
+fn flush_and_trim(writer: &mut Writer, before: i64, ts: i64, retention: i64, next_trim: &mut i64) {
+    if let Err(e) = writer.flush(before) {
+        eprintln!("radar-collect: flushing: {e}");
+        return;
+    }
+    if ts >= *next_trim {
+        if let Err(e) = writer.trim(ts - retention) {
+            eprintln!("radar-collect: trimming: {e}");
+        }
+        *next_trim = ts + TRIM_SECS;
+    }
 }
 
 fn serve(args: &Args) -> Result<(), Box<dyn Error>> {
