@@ -19,11 +19,10 @@ impl Range {
     }
 }
 
-pub const PRESETS: [(&str, i64); 5] = [
+pub const PRESETS: [(&str, i64); 4] = [
     ("1h", 3600),
     ("6h", 6 * 3600),
     ("24h", 86400),
-    ("3d", 3 * 86400),
     ("5d", 5 * 86400),
 ];
 
@@ -64,8 +63,10 @@ pub fn preset_named(name: &str) -> Option<i64> {
         .map(|(_, secs)| *secs)
 }
 
+#[derive(Clone)]
 pub struct RangePicker {
     pub root: gtk::Box,
+    widths: gtk::SizeGroup,
     sub_hour: gtk::ToggleButton,
     sub_hour_labels: gtk::Stack,
     sub_hour_secs: Rc<Cell<i64>>,
@@ -236,10 +237,7 @@ impl RangePicker {
             sub_hour_labels.add_named(&gtk::Label::new(Some(label)), Some(label));
         }
         sub_hour_labels.set_visible_child_name(default_label);
-        let sub_hour = gtk::ToggleButton::builder()
-            .child(&sub_hour_labels)
-            .hexpand(true)
-            .build();
+        let sub_hour = gtk::ToggleButton::builder().child(&sub_hour_labels).build();
         {
             let (on_change, updating, sub_hour_secs) =
                 (on_change.clone(), updating.clone(), sub_hour_secs.clone());
@@ -360,6 +358,7 @@ impl RangePicker {
 
         RangePicker {
             root,
+            widths,
             sub_hour,
             sub_hour_labels,
             sub_hour_secs,
@@ -369,6 +368,16 @@ impl RangePicker {
             current,
             oldest,
         }
+    }
+
+    /// Equal-width buttons in a wide window; each as wide as its label in a
+    /// narrow one, so the row fits.
+    pub fn set_compact(&self, compact: bool) {
+        self.widths.set_mode(if compact {
+            gtk::SizeGroupMode::None
+        } else {
+            gtk::SizeGroupMode::Horizontal
+        });
     }
 
     pub fn set_oldest(&self, oldest: Option<i64>) {
