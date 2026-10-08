@@ -33,7 +33,8 @@ make install
 ```
 
 This builds in release mode, installs both binaries to `~/.local/bin`,
-installs the desktop file, icon and user service, and starts the collector.
+installs the desktop file, icon and user service, starts the collector, and
+sets up the [Claude Code status line](#ai-agents).
 Run `make uninstall` to remove it all again.
 
 ## Data
@@ -55,8 +56,10 @@ and a token count with every response.
 **Claude Code** does not persist its quota anywhere, but it pipes the data to a
 status line command after every assistant message. `make install` puts
 `radar-claude-statusline` in `~/.local/bin`; it saves that JSON under
-`~/.local/state/radar/claude/`, one line per update, and prints nothing. Enable it in
-`~/.claude/settings.json`:
+`~/.local/state/radar/claude/`, one line per update, and prints nothing.
+
+`make install` also runs `radar configure claude`, which sets the status line
+in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`):
 
 ```json
 {
@@ -67,9 +70,17 @@ status line command after every assistant message. `make install` puts
 }
 ```
 
-If you already have a status line, add a line to your script that pipes its
-input through `radar-claude-statusline` as well. The rate-limit fields appear
-only on claude.ai Pro and Max subscriptions.
+If the helper's directory is not on your `PATH`, it writes the helper's full
+path instead. It is safe to run again: it adds only that key, leaves the rest
+of the file as it was, and does nothing if it is already set. If you already
+have a different status line it leaves it alone and warns; add a line to your
+script that pipes its input through `radar-claude-statusline` as well.
+
+`make uninstall` runs `radar remove claude`, which takes the key out again if
+it still runs only `radar-claude-statusline`, and leaves any other status line
+alone.
+
+The rate-limit fields appear only on claude.ai Pro and Max subscriptions.
 
 ## Releasing
 
