@@ -22,8 +22,10 @@ install: build
 	systemctl --user daemon-reload
 	systemctl --user enable --now radar-collect
 	systemctl --user restart radar-collect
+	-$(BINDIR)/radar configure claude
 
 uninstall:
+	-$(BINDIR)/radar remove claude
 	-systemctl --user disable --now radar-collect
 	rm -f $(BINDIR)/radar-collect $(BINDIR)/radar $(BINDIR)/radar-claude-statusline
 	rm -f $(UNITDIR)/radar-collect.service
