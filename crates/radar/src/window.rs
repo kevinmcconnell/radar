@@ -162,8 +162,12 @@ pub fn build(
             gpu: Card::new("GPU", Format::Percent, YRange::Fixed(100.0)),
             fans: Card::new("Fans", Format::Rpm, YRange::Auto),
             power: Card::new("Battery Power", Format::Watts, YRange::Auto),
-            quota: Card::new("AI Quota Remaining", Format::Percent, YRange::Fixed(100.0)),
-            tokens: Card::new("AI Tokens", Format::TokensPerMin, YRange::Auto),
+            quota: Card::new(
+                "Agent Quota Remaining",
+                Format::Percent,
+                YRange::Fixed(100.0),
+            ),
+            tokens: Card::new("Agent Tokens", Format::TokensPerMin, YRange::Auto),
         };
         let try_again = gtk::Button::builder()
             .label("Try Again")

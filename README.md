@@ -2,7 +2,7 @@
 
 See how busy your machine has been, and why.
 
-![Radar showing CPU, temperature, memory and network charts and top processes](.github/assets/screenshot.png)
+![Radar showing CPU, clock, temperature, memory, network, disk, GPU and agent charts beside the top processes](.github/assets/screenshot.png)
 
 Radar is a small system activity recorder and viewer for a single-user Linux
 desktop. It has two parts:
